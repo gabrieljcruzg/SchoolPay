@@ -72,7 +72,8 @@ service cloud.firestore {
 
     // ── Kermes ───────────────────────────────────────────────────────────────
     match /kermesCards/{cardId} {
-      allow read, write: if isTeacher();
+      allow get: if true;
+      allow list, write: if isTeacher();
     }
 
     match /kermesVendors/{vendorId} {

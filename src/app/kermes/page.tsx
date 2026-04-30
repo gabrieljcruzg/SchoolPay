@@ -26,6 +26,14 @@ import { fmtCoins, type KermesCard, type KermesProduct, type KermesTransaction, 
 
 type KermesTab = 'pos' | 'cards' | 'vendors' | 'history'
 
+type Receipt = {
+  type: 'charge' | 'recharge'
+  amount: number
+  balance: number
+  cardId: string
+  vendorName?: string
+}
+
 export default function KermesPage() {
   const { user, loading, isTeacher } = useAuth()
   const router = useRouter()
@@ -53,6 +61,7 @@ function KermesManager({ teacherId }: { teacherId: string }) {
   const [note, setNote] = useState('')
   const [vendorId, setVendorId] = useState('')
   const [cart, setCart] = useState<Record<string, number>>({})
+  const [receipt, setReceipt] = useState<Receipt | null>(null)
   const [busy, setBusy] = useState(false)
   const { toasts, show: showToast, dismiss } = useToast()
 
@@ -119,7 +128,14 @@ function KermesManager({ teacherId }: { teacherId: string }) {
         qty,
       }))
       const txNote = note.trim() || (items.length ? items.map(item => `${item.qty}x ${item.name}`).join(', ') : undefined)
-      await chargeKermesCard(selectedCardId, selectedVendor, parsedAmount, teacherId, txNote, items)
+      const updatedCard = await chargeKermesCard(selectedCardId, selectedVendor, parsedAmount, teacherId, txNote, items)
+      setReceipt({
+        type: 'charge',
+        amount: parsedAmount,
+        balance: updatedCard.balance,
+        cardId: updatedCard.id,
+        vendorName: selectedVendor.name,
+      })
       showToast(`Cobro aplicado: ${fmtCoins(parsedAmount)} · ${selectedVendor.name}`, 'ok')
       setAmount('')
       setNote('')
@@ -135,7 +151,13 @@ function KermesManager({ teacherId }: { teacherId: string }) {
     if (!selectedCardId) return
     setBusy(true)
     try {
-      await rechargeKermesCard(selectedCardId, parsedAmount, teacherId, note.trim() || undefined)
+      const updatedCard = await rechargeKermesCard(selectedCardId, parsedAmount, teacherId, note.trim() || undefined)
+      setReceipt({
+        type: 'recharge',
+        amount: parsedAmount,
+        balance: updatedCard.balance,
+        cardId: updatedCard.id,
+      })
       showToast(`Recarga aplicada: ${fmtCoins(parsedAmount)}`, 'ok')
       setAmount('')
       setNote('')
@@ -298,7 +320,35 @@ function KermesManager({ teacherId }: { teacherId: string }) {
         {tab === 'history' && <KermesHistory txs={txs} />}
       </main>
 
+      {receipt && <ReceiptModal receipt={receipt} onClose={() => setReceipt(null)} />}
       <ToastList toasts={toasts} onDismiss={dismiss} />
+    </div>
+  )
+}
+
+function ReceiptModal({ receipt, onClose }: { receipt: Receipt; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+      <div className="w-full max-w-sm rounded-2xl bg-sp-bg2 border border-white/10 p-5 text-center shadow-2xl">
+        <div className={`w-14 h-14 mx-auto rounded-full flex items-center justify-center text-2xl mb-4 ${receipt.type === 'charge' ? 'bg-red-950/60 text-red-300' : 'bg-green-950/60 text-green-300'}`}>
+          {receipt.type === 'charge' ? '−' : '+'}
+        </div>
+        <h2 className="text-lg font-bold mb-1">{receipt.type === 'charge' ? 'Cobro realizado' : 'Recarga realizada'}</h2>
+        <p className="text-xs text-slate-500 mb-5">{receipt.cardId}{receipt.vendorName ? ` · ${receipt.vendorName}` : ''}</p>
+        <div className="grid grid-cols-2 gap-3 mb-5">
+          <div className="rounded-xl bg-sp-bg3 p-3">
+            <div className="text-xs text-slate-600 mb-1">Monto</div>
+            <div className="text-xl font-black text-slate-100">{fmtCoins(receipt.amount)}</div>
+          </div>
+          <div className="rounded-xl bg-sp-bg3 p-3">
+            <div className="text-xs text-slate-600 mb-1">Saldo</div>
+            <div className="text-xl font-black text-sp-gold">{fmtCoins(receipt.balance)}</div>
+          </div>
+        </div>
+        <button onClick={onClose} className="w-full rounded-xl bg-sp-gold/15 border border-sp-gold/30 text-sp-gold py-3 font-semibold">
+          Listo
+        </button>
+      </div>
     </div>
   )
 }

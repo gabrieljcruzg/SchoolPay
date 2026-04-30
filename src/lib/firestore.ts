@@ -424,9 +424,11 @@ export function subscribeToKermesCards(callback: (cards: KermesCard[]) => void):
 }
 
 export async function createKermesCard(label: string): Promise<KermesCard> {
-  const ref = doc(collection(db, 'kermesCards'))
+  const draftRef = doc(collection(db, 'kermesCards'))
+  const publicId = `K-${draftRef.id.slice(0, 8).toUpperCase()}`
+  const ref = doc(db, 'kermesCards', publicId)
   const card: Omit<KermesCard, 'createdAt'> = {
-    id: `K-${ref.id.slice(0, 8).toUpperCase()}`,
+    id: publicId,
     label,
     balance: 0,
     active: true,
@@ -435,7 +437,29 @@ export async function createKermesCard(label: string): Promise<KermesCard> {
   return { ...card, createdAt: new Date() }
 }
 
-export async function rechargeKermesCard(cardId: string, amount: number, teacherId: string, note?: string): Promise<void> {
+export async function getKermesCard(cardId: string): Promise<KermesCard | null> {
+  const publicId = cardId.trim().toUpperCase()
+  const directSnap = await getDoc(doc(db, 'kermesCards', publicId))
+  if (directSnap.exists()) {
+    const data = directSnap.data()
+    return {
+      ...data,
+      id: data.id ?? directSnap.id,
+      createdAt: data.createdAt?.toDate() ?? new Date(),
+    } as KermesCard
+  }
+
+  const found = await findKermesCardByPublicId(publicId)
+  return found ? {
+    id: found.publicId,
+    label: found.label,
+    balance: found.balance,
+    active: found.active,
+    createdAt: found.createdAt,
+  } : null
+}
+
+export async function rechargeKermesCard(cardId: string, amount: number, teacherId: string, note?: string): Promise<KermesCard> {
   if (amount <= 0) throw new Error('La recarga debe ser mayor a cero')
   const card = await findKermesCardByPublicId(cardId)
   if (!card) throw new Error('Tarjeta no encontrada')
@@ -451,6 +475,7 @@ export async function rechargeKermesCard(cardId: string, amount: number, teacher
     ts: serverTimestamp(),
   })
   await batch.commit()
+  return { ...card, id: card.publicId, balance: card.balance + amount }
 }
 
 export async function chargeKermesCard(
@@ -460,7 +485,7 @@ export async function chargeKermesCard(
   teacherId: string,
   note?: string,
   items?: { id: string; name: string; price: number; qty: number }[],
-): Promise<void> {
+): Promise<KermesCard> {
   if (amount <= 0) throw new Error('El cobro debe ser mayor a cero')
   const card = await findKermesCardByPublicId(cardId)
   if (!card) throw new Error('Tarjeta no encontrada')
@@ -480,6 +505,7 @@ export async function chargeKermesCard(
     ts: serverTimestamp(),
   })
   await batch.commit()
+  return { ...card, id: card.publicId, balance: card.balance - amount }
 }
 
 export function subscribeToKermesVendors(callback: (vendors: KermesVendor[]) => void): Unsubscribe {
@@ -555,6 +581,18 @@ export function subscribeToKermesTransactions(callback: (txs: KermesTransaction[
 
 async function findKermesCardByPublicId(cardId: string): Promise<(KermesCard & { docId: string; publicId: string }) | null> {
   const publicId = cardId.trim().toUpperCase()
+  const directSnap = await getDoc(doc(db, 'kermesCards', publicId))
+  if (directSnap.exists()) {
+    const data = directSnap.data()
+    return {
+      ...data,
+      id: data.id ?? publicId,
+      publicId: data.id ?? publicId,
+      docId: directSnap.id,
+      createdAt: data.createdAt?.toDate() ?? new Date(),
+    } as KermesCard & { docId: string; publicId: string }
+  }
+
   const snap = await getDocs(query(collection(db, 'kermesCards'), where('id', '==', publicId), limit(1)))
   const docSnap = snap.docs[0]
   if (!docSnap) return null
