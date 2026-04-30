@@ -12,6 +12,7 @@ import {
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
+  signInWithPopup,
   signInWithRedirect,
   GoogleAuthProvider,
   signOut,
@@ -26,7 +27,16 @@ import {
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 
 export async function teacherSignIn() {
-  return signInWithRedirect(auth, new GoogleAuthProvider())
+  const provider = new GoogleAuthProvider()
+
+  try {
+    return await signInWithPopup(auth, provider)
+  } catch (e: any) {
+    if (e.code === 'auth/popup-blocked') {
+      return signInWithRedirect(auth, provider)
+    }
+    throw e
+  }
 }
 
 export async function studentSignIn(studentId: string, pin: string) {
