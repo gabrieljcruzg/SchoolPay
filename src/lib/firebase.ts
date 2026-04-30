@@ -4,7 +4,7 @@ import {
   getFirestore,
   initializeFirestore,
   persistentLocalCache,
-  persistentSingleTabManager,
+  persistentMultipleTabManager,
 } from 'firebase/firestore'
 
 export const firebaseConfig = {
@@ -31,7 +31,7 @@ export const db            = typeof window === 'undefined'
   ? getFirestore(app)
   : initializeFirestore(app, {
       localCache: persistentLocalCache({
-        tabManager: persistentSingleTabManager({}),
+        tabManager: persistentMultipleTabManager(),
       }),
     })
 
