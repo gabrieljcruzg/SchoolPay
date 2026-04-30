@@ -410,7 +410,14 @@ export function subscribeToKermesCards(callback: (cards: KermesCard[]) => void):
   return onSnapshot(q, snap => {
     callback(
       snap.docs
-        .map(d => ({ ...d.data(), id: d.id, createdAt: d.data().createdAt?.toDate() ?? new Date() }) as KermesCard)
+        .map(d => {
+          const data = d.data()
+          return {
+            ...data,
+            id: data.id ?? d.id,
+            createdAt: data.createdAt?.toDate() ?? new Date(),
+          } as KermesCard
+        })
         .filter(card => card.active !== false)
     )
   })
