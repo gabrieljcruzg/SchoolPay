@@ -6,7 +6,7 @@ export interface Student {
   id: string           // Ej: "3A-017" — también es el UID de Firebase Auth sin dominio
   name: string         // "García López, Andrea" (apellido, nombre)
   avatar: string       // Iniciales de 2 chars: "AG"
-  pin: string          // 4 dígitos — se usa como contraseña en Firebase Auth
+  pin: string          // 6 dígitos — se usa como contraseña en Firebase Auth
   groupId: string      // "3A"
   balance: number      // Saldo actual en EduCoins (nunca < 0)
   totalEarned: number  // Total histórico ganado (determina el nivel)
@@ -169,7 +169,7 @@ export function fmtCoins(n: number): string {
 }
 
 export function genPin(): string {
-  return String(Math.floor(1000 + Math.random() * 9000))
+  return String(Math.floor(100000 + Math.random() * 900000))
 }
 
 export function studentEmail(studentId: string): string {

@@ -16,7 +16,7 @@ export function StudentLoginForm({ onSuccess }: LoginFormProps) {
   const pinRef = useRef<HTMLInputElement>(null)
 
   const tryLogin = async () => {
-    if (!id.trim() || pin.length < 4) {
+    if (!id.trim() || pin.length < 6) {
       triggerShake('Ingresa tu ID y PIN completo')
       return
     }
@@ -112,16 +112,16 @@ export function StudentLoginForm({ onSuccess }: LoginFormProps) {
               />
             </div>
             <div>
-              <label className="text-xs text-slate-600 block mb-1.5">PIN de 4 dígitos</label>
+              <label className="text-xs text-slate-600 block mb-1.5">PIN de 6 dígitos</label>
               <input
                 ref={pinRef}
                 value={pin}
-                onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 onKeyDown={(e) => e.key === 'Enter' && tryLogin()}
                 type="password"
                 inputMode="numeric"
-                maxLength={4}
-                placeholder="● ● ● ●"
+                maxLength={6}
+                placeholder="● ● ● ● ● ●"
                 className="input font-mono text-center text-xl tracking-[0.5em]"
                 autoComplete="current-password"
               />

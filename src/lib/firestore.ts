@@ -15,6 +15,7 @@ import {
   signInWithPopup,
   signInWithRedirect,
   GoogleAuthProvider,
+  updatePassword,
   signOut,
 } from 'firebase/auth'
 import { db, auth, secondaryAuth } from './firebase'
@@ -87,8 +88,15 @@ export async function updateStudentName(studentId: string, name: string): Promis
 }
 
 export async function resetStudentPin(studentId: string): Promise<string> {
+  const student = await getStudent(studentId)
+  if (!student) throw new Error('Alumno no encontrado')
+
   const newPin = genPin()
-  // Guardamos el nuevo PIN en Firestore — el docente reimprime la tarjeta
+  await signInWithEmailAndPassword(secondaryAuth, studentEmail(studentId), student.pin)
+  if (!secondaryAuth.currentUser) throw new Error('No se pudo autenticar al alumno para cambiar el PIN')
+  await updatePassword(secondaryAuth.currentUser, newPin)
+  await secondaryAuth.signOut()
+
   await updateDoc(doc(db, 'students', studentId), { pin: newPin })
   return newPin
 }

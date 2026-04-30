@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter }   from 'next/navigation'
 import { useAuth }     from '@/lib/auth'
 import {
@@ -34,11 +34,19 @@ export default function StudentsPage() {
 
 type ViewMode = 'list' | 'add' | 'edit'
 
+type ImportResult = {
+  created: Student[]
+  failed: { name: string; error: string }[]
+}
+
 function StudentManager({ groupId, teacherId }: { groupId: string; teacherId: string }) {
   const [students, setStudents] = useState<Student[]>([])
   const [mode,     setMode]     = useState<ViewMode>('list')
   const [editing,  setEditing]  = useState<Student | null>(null)
   const [pinVisible, setPinVisible] = useState<Record<string, boolean>>({})
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const { toasts, show: showToast, dismiss } = useToast()
 
   useEffect(() => {
@@ -52,6 +60,44 @@ function StudentManager({ groupId, teacherId }: { groupId: string; teacherId: st
       setMode('list')
     } catch (e: any) {
       showToast(e.message ?? 'Error al crear alumno', 'err')
+    }
+  }
+
+  const handleImportFile = async (file: File) => {
+    setImporting(true)
+    setImportResult(null)
+    try {
+      const names = await readStudentNamesFromSpreadsheet(file)
+      if (!names.length) {
+        showToast('No encontré nombres válidos en el archivo', 'err')
+        return
+      }
+
+      const created: Student[] = []
+      const failed: ImportResult['failed'] = []
+
+      for (const name of names) {
+        try {
+          const student = await createStudent({ name, groupId })
+          created.push(student)
+        } catch (e: any) {
+          failed.push({ name, error: getFirebaseErrorMessage(e) })
+        }
+      }
+
+      setImportResult({ created, failed })
+      if (created.length) {
+        setPinVisible(p => ({
+          ...p,
+          ...Object.fromEntries(created.map(s => [s.id, true])),
+        }))
+      }
+      showToast(`Importación lista: ${created.length} creados, ${failed.length} fallidos`, failed.length ? 'info' : 'ok')
+    } catch (e: any) {
+      showToast(e.message ?? 'No se pudo leer el archivo', 'err')
+    } finally {
+      setImporting(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }
 
@@ -124,13 +170,36 @@ function StudentManager({ groupId, teacherId }: { groupId: string; teacherId: st
           <>
             <div className="flex items-center justify-between mb-5">
               <h1 className="text-lg font-bold">Alumnos del grupo</h1>
-              <button
-                onClick={() => setMode('add')}
-                className="flex items-center gap-2 bg-sp-gold/15 border border-sp-gold/30 text-sp-gold px-4 py-2 rounded-lg text-sm font-semibold hover:bg-sp-gold/25 transition-colors active:scale-95"
-              >
-                + Nuevo alumno
-              </button>
+              <div className="flex items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  className="hidden"
+                  onChange={e => {
+                    const file = e.target.files?.[0]
+                    if (file) handleImportFile(file)
+                  }}
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={importing}
+                  className="flex items-center gap-2 border border-white/10 text-slate-300 px-4 py-2 rounded-lg text-sm font-semibold hover:border-white/20 transition-colors active:scale-95 disabled:opacity-40"
+                >
+                  {importing ? 'Importando...' : 'Importar Excel'}
+                </button>
+                <button
+                  onClick={() => setMode('add')}
+                  className="flex items-center gap-2 bg-sp-gold/15 border border-sp-gold/30 text-sp-gold px-4 py-2 rounded-lg text-sm font-semibold hover:bg-sp-gold/25 transition-colors active:scale-95"
+                >
+                  + Nuevo alumno
+                </button>
+              </div>
             </div>
+
+            {importResult && (
+              <ImportSummary result={importResult} />
+            )}
 
             {students.length === 0 && (
               <div className="text-center py-16 text-slate-600">
@@ -249,6 +318,68 @@ function MenuItem({ onClick, icon, label, className = '' }: { onClick: () => voi
   )
 }
 
+function ImportSummary({ result }: { result: ImportResult }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-sp-bg2 p-4 mb-5">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <h2 className="text-sm font-semibold">Resultado de importación</h2>
+        <span className="text-xs text-slate-500">
+          {result.created.length} creados · {result.failed.length} fallidos
+        </span>
+      </div>
+      {result.created.length > 0 && (
+        <div className="max-h-44 overflow-auto rounded-lg bg-sp-bg3 p-3 mb-3">
+          <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 gap-y-1 text-xs">
+            {result.created.map(s => (
+              <div key={s.id} className="contents">
+                <span className="text-slate-300 truncate">{s.name}</span>
+                <span className="font-mono text-sp-accent">{s.id}</span>
+                <span className="font-mono text-sp-gold">{s.pin}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {result.failed.length > 0 && (
+        <div className="text-xs text-red-300 space-y-1">
+          {result.failed.map((item, idx) => (
+            <p key={`${item.name}-${idx}`}>
+              <b>{item.name}</b>: {item.error}
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+async function readStudentNamesFromSpreadsheet(file: File): Promise<string[]> {
+  const XLSX = await import('xlsx')
+  const buffer = await file.arrayBuffer()
+  const workbook = XLSX.read(buffer, { type: 'array' })
+  const sheet = workbook.Sheets[workbook.SheetNames[0]]
+  if (!sheet) return []
+
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+  const names = rows
+    .map(row => {
+      const entries = Object.entries(row)
+      const explicit = entries.find(([key]) => /^(nombre|alumno|student|name)$/i.test(key.trim()))
+      const value = explicit?.[1] ?? entries[0]?.[1] ?? ''
+      return String(value).trim()
+    })
+    .filter(Boolean)
+
+  return Array.from(new Set(names))
+}
+
+function getFirebaseErrorMessage(error: any): string {
+  if (error?.code === 'auth/email-already-in-use') return 'ya existe una cuenta con ese ID'
+  if (error?.code === 'auth/weak-password') return 'Firebase rechazó la contraseña generada'
+  if (error?.message) return error.message
+  return 'error desconocido'
+}
+
 // ─── ADD FORM ─────────────────────────────────────────────────────────────────
 
 function AddStudentForm({ onSubmit, onCancel }: { onSubmit: (name: string) => Promise<void>; onCancel: () => void }) {
@@ -290,7 +421,7 @@ function AddStudentForm({ onSubmit, onCancel }: { onSubmit: (name: string) => Pr
       </div>
 
       <div className="bg-sp-bg3 rounded-lg p-3 mb-4 text-xs text-slate-600 leading-relaxed">
-        El sistema generará automáticamente: ID secuencial · PIN aleatorio de 4 dígitos · Saldo inicial de 100 ₡
+        El sistema generará automáticamente: ID secuencial · PIN aleatorio de 6 dígitos · Saldo inicial de 100 ₡
       </div>
 
       {error && <p className="text-xs text-red-400 mb-3">{error}</p>}
