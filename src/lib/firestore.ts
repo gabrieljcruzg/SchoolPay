@@ -12,7 +12,7 @@ import {
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
-  signInWithPopup,
+  signInWithRedirect,
   GoogleAuthProvider,
   signOut,
 } from 'firebase/auth'
@@ -26,7 +26,7 @@ import {
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 
 export async function teacherSignIn() {
-  return signInWithPopup(auth, new GoogleAuthProvider())
+  return signInWithRedirect(auth, new GoogleAuthProvider())
 }
 
 export async function studentSignIn(studentId: string, pin: string) {
