@@ -10,6 +10,7 @@ import {
   createKermesCard,
   createKermesProduct,
   createKermesVendor,
+  deleteKermesAccess,
   deleteKermesProduct,
   deleteKermesVendor,
   kermesAccessSignIn,
@@ -110,13 +111,14 @@ function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean
   }, [user.role, user.kermesVendorId, vendorId, vendors])
 
   useEffect(() => {
-    if (!vendorId) {
+    if (!vendorId || !canCharge) {
       setProducts([])
+      setCart({})
       return
     }
     setCart({})
     return subscribeToKermesProducts(vendorId, setProducts)
-  }, [vendorId])
+  }, [canCharge, vendorId])
 
   const handleRead = useCallback((id: string) => {
     setSelectedCardId(id)
@@ -132,7 +134,7 @@ function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean
     .filter(item => item.qty > 0)
   const cartTotal = cartItems.reduce((sum, item) => sum + item.product.price * item.qty, 0)
 
-  const parsedAmount = cartTotal || Number(amount)
+  const parsedAmount = canCharge ? cartTotal || Number(amount) : Number(amount)
 
   const addProduct = (product: KermesProduct) => {
     setCart(prev => ({ ...prev, [product.id]: (prev[product.id] ?? 0) + 1 }))
@@ -229,7 +231,7 @@ function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean
         {tab === 'pos' && (
           <section className="grid md:grid-cols-[1fr_320px] gap-4">
             <div className="rounded-xl border border-white/10 bg-sp-bg2 p-4">
-              <h1 className="text-lg font-bold mb-4">Cobro y recarga</h1>
+              <h1 className="text-lg font-bold mb-4">{canCharge && canRecharge ? 'Cobro y recarga' : canRecharge ? 'Banco' : 'Punto de venta'}</h1>
               <button
                 onClick={status === 'scanning' ? stopScan : startScan}
                 className="w-full bg-sp-gold/15 border border-sp-gold/30 text-sp-gold rounded-xl py-4 font-semibold mb-3"
@@ -269,24 +271,31 @@ function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean
               )}
 
               <div className="grid sm:grid-cols-2 gap-3">
+                {canCharge ? (
+                  <div>
+                    <label className="text-xs text-slate-600 block mb-1.5">Tienda</label>
+                    <select
+                      value={vendorId}
+                      onChange={e => setVendorId(e.target.value)}
+                      className="input disabled:opacity-70"
+                      disabled={user.role === 'kermes_vendor' && !isTeacher}
+                    >
+                      {vendors.map(vendor => <option key={vendor.id} value={vendor.id}>{vendor.name}</option>)}
+                    </select>
+                  </div>
+                ) : (
+                  <div>
+                    <label className="text-xs text-slate-600 block mb-1.5">Operación</label>
+                    <input value="Banco" readOnly className="input opacity-70" />
+                  </div>
+                )}
                 <div>
-                  <label className="text-xs text-slate-600 block mb-1.5">Tienda</label>
-                  <select
-                    value={vendorId}
-                    onChange={e => setVendorId(e.target.value)}
-                    className="input disabled:opacity-70"
-                    disabled={user.role === 'kermes_vendor' && !isTeacher}
-                  >
-                    {vendors.map(vendor => <option key={vendor.id} value={vendor.id}>{vendor.name}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs text-slate-600 block mb-1.5">Monto manual</label>
+                  <label className="text-xs text-slate-600 block mb-1.5">Monto</label>
                   <input value={amount} onChange={e => setAmount(e.target.value.replace(/[^\d]/g, ''))} className="input font-mono" placeholder="Opcional" disabled={cartTotal > 0} />
                 </div>
               </div>
 
-              <div className="mt-4">
+              {canCharge && <div className="mt-4">
                 <div className="flex items-center justify-between mb-2">
                   <h2 className="text-sm font-semibold">Productos</h2>
                   <span className="text-xs text-slate-600">{products.length} activos</span>
@@ -309,9 +318,9 @@ function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean
                     ))}
                   </div>
                 )}
-              </div>
+              </div>}
 
-              {cartItems.length > 0 && (
+              {canCharge && cartItems.length > 0 && (
                 <div className="rounded-xl bg-sp-bg3 border border-white/5 p-3 mt-4">
                   <div className="flex items-center justify-between mb-2">
                     <h2 className="text-sm font-semibold">Cuenta</h2>
@@ -390,8 +399,11 @@ function KermesAccessLogin() {
         <Link href="/" className="text-xs text-slate-600 hover:text-slate-400">← Volver</Link>
         <h1 className="text-xl font-bold mt-5 mb-1">Acceso Kermés</h1>
         <p className="text-sm text-slate-600 mb-5">Entra con la cuenta asignada a este celular.</p>
-        <label className="text-xs text-slate-600 block mb-1.5">Correo</label>
-        <input value={email} onChange={e => setEmail(e.target.value)} className="input mb-3" autoComplete="username" />
+        <label className="text-xs text-slate-600 block mb-1.5">Usuario</label>
+        <div className="flex mb-3">
+          <input value={email} onChange={e => setEmail(e.target.value)} className="input rounded-r-none font-mono" autoComplete="username" placeholder="banco.1" />
+          <span className="hidden sm:flex items-center rounded-r-lg border border-l-0 border-white/10 bg-sp-bg3 px-3 text-xs text-slate-600">@kermes.schoolpay.local</span>
+        </div>
         <label className="text-xs text-slate-600 block mb-1.5">Contraseña</label>
         <input value={password} onChange={e => setPassword(e.target.value)} className="input mb-4" type="password" autoComplete="current-password" />
         {error && <div className="rounded-lg bg-red-950/40 border border-red-700/30 text-red-300 text-sm p-3 mb-3">{error}</div>}
@@ -438,23 +450,6 @@ function KermesAccessAdmin({
     }
   }
 
-  const updateRole = async (access: KermesAccess, nextRole: 'vendor' | 'bank') => {
-    const vendor = vendors.find(v => v.id === access.vendorId) ?? vendors[0]
-    await updateKermesAccess(access.id, {
-      role: nextRole,
-      vendorId: nextRole === 'vendor' ? vendor?.id ?? '' : '',
-      vendorName: nextRole === 'vendor' ? vendor?.name ?? '' : '',
-    })
-    onToast('Rol actualizado', 'ok')
-  }
-
-  const updateVendor = async (access: KermesAccess, nextVendorId: string) => {
-    const vendor = vendors.find(v => v.id === nextVendorId)
-    if (!vendor) return
-    await updateKermesAccess(access.id, { vendorId: vendor.id, vendorName: vendor.name })
-    onToast('Tienda actualizada', 'ok')
-  }
-
   return (
     <section className="grid lg:grid-cols-[340px_1fr] gap-4">
       <div className="rounded-xl border border-white/10 bg-sp-bg2 p-4">
@@ -480,7 +475,8 @@ function KermesAccessAdmin({
         {lastAccount && (
           <div className="mt-4 rounded-xl bg-sp-bg3 border border-white/5 p-3">
             <div className="text-xs text-slate-600 mb-2">Entrega estos datos al celular asignado</div>
-            <div className="font-mono text-xs text-sp-accent break-all">{lastAccount.email}</div>
+            <div className="font-mono text-base font-bold text-sp-accent break-all">{lastAccount.email.split('@')[0]}</div>
+            <div className="font-mono text-[11px] text-slate-600 break-all">{lastAccount.email}</div>
             <div className="font-mono text-lg font-bold text-sp-gold mt-2">{lastAccount.password}</div>
           </div>
         )}
@@ -490,33 +486,7 @@ function KermesAccessAdmin({
         <h1 className="text-lg font-bold mb-4">Cuentas de Kermés</h1>
         <div className="space-y-2">
           {accessList.map(access => (
-            <div key={access.id} className="rounded-xl bg-sp-bg3 border border-white/5 p-3">
-              <div className="grid lg:grid-cols-[1fr_150px_190px_auto] gap-2 items-center">
-                <div className="min-w-0">
-                  <div className="font-semibold truncate">{access.name}</div>
-                  <div className="font-mono text-xs text-slate-600 truncate">{access.email}</div>
-                </div>
-                <select value={access.role} onChange={e => updateRole(access, e.target.value as 'vendor' | 'bank')} className="input text-sm">
-                  <option value="vendor">Tienda</option>
-                  <option value="bank">Banco</option>
-                </select>
-                <select
-                  value={access.vendorId ?? ''}
-                  onChange={e => updateVendor(access, e.target.value)}
-                  disabled={access.role !== 'vendor'}
-                  className="input text-sm disabled:opacity-40"
-                >
-                  <option value="">Sin tienda</option>
-                  {vendors.map(vendor => <option key={vendor.id} value={vendor.id}>{vendor.name}</option>)}
-                </select>
-                <button
-                  onClick={() => updateKermesAccess(access.id, { active: !access.active }).then(() => onToast(access.active ? 'Acceso desactivado' : 'Acceso activado', 'ok'))}
-                  className={`rounded-lg border px-3 py-2 text-xs font-semibold ${access.active ? 'border-green-700/30 text-green-300 bg-green-950/30' : 'border-red-700/30 text-red-300 bg-red-950/30'}`}
-                >
-                  {access.active ? 'Activo' : 'Inactivo'}
-                </button>
-              </div>
-            </div>
+            <AccessRow key={access.id} access={access} vendors={vendors} onToast={onToast} />
           ))}
           {accessList.length === 0 && (
             <div className="rounded-xl border border-dashed border-white/10 p-8 text-center text-sm text-slate-600">
@@ -526,6 +496,119 @@ function KermesAccessAdmin({
         </div>
       </div>
     </section>
+  )
+}
+
+function AccessRow({
+  access,
+  vendors,
+  onToast,
+}: {
+  access: KermesAccess
+  vendors: KermesVendor[]
+  onToast: (msg: string, type?: 'ok' | 'err') => void
+}) {
+  const [name, setName] = useState(access.name)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => setName(access.name), [access.name])
+
+  const saveName = async () => {
+    const cleanName = name.trim()
+    if (!cleanName || cleanName === access.name) return
+    setSaving(true)
+    try {
+      await updateKermesAccess(access.id, { name: cleanName })
+      onToast('Nombre actualizado', 'ok')
+    } catch (e: any) {
+      onToast(e.message ?? 'No se pudo actualizar el nombre', 'err')
+      setName(access.name)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const updateRole = async (nextRole: 'vendor' | 'bank') => {
+    const vendor = vendors.find(v => v.id === access.vendorId) ?? vendors[0]
+    try {
+      await updateKermesAccess(access.id, {
+        role: nextRole,
+        vendorId: nextRole === 'vendor' ? vendor?.id ?? '' : '',
+        vendorName: nextRole === 'vendor' ? vendor?.name ?? '' : '',
+      })
+      onToast('Rol actualizado', 'ok')
+    } catch (e: any) {
+      onToast(e.message ?? 'No se pudo actualizar el rol', 'err')
+    }
+  }
+
+  const updateVendor = async (nextVendorId: string) => {
+    const vendor = vendors.find(v => v.id === nextVendorId)
+    if (!vendor) return
+    try {
+      await updateKermesAccess(access.id, { vendorId: vendor.id, vendorName: vendor.name })
+      onToast('Tienda actualizada', 'ok')
+    } catch (e: any) {
+      onToast(e.message ?? 'No se pudo actualizar la tienda', 'err')
+    }
+  }
+
+  const toggleActive = async () => {
+    try {
+      await updateKermesAccess(access.id, { active: !access.active })
+      onToast(access.active ? 'Acceso desactivado' : 'Acceso activado', 'ok')
+    } catch (e: any) {
+      onToast(e.message ?? 'No se pudo cambiar el estado', 'err')
+    }
+  }
+
+  const remove = async () => {
+    if (!window.confirm(`¿Borrar el acceso "${access.name}"? Ese celular ya no podrá entrar como terminal.`)) return
+    try {
+      await deleteKermesAccess(access.id)
+      onToast('Acceso borrado', 'ok')
+    } catch (e: any) {
+      onToast(e.message ?? 'No se pudo borrar el acceso', 'err')
+    }
+  }
+
+  return (
+    <div className="rounded-xl bg-sp-bg3 border border-white/5 p-3">
+      <div className="grid xl:grid-cols-[1.2fr_150px_190px_auto_auto] gap-2 items-center">
+        <div className="min-w-0">
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            onBlur={saveName}
+            disabled={saving}
+            className="input text-sm mb-1"
+          />
+          <div className="font-mono text-xs text-slate-600 truncate">{access.email}</div>
+        </div>
+        <select value={access.role} onChange={e => updateRole(e.target.value as 'vendor' | 'bank')} className="input text-sm">
+          <option value="vendor">Tienda</option>
+          <option value="bank">Banco</option>
+        </select>
+        <select
+          value={access.vendorId ?? ''}
+          onChange={e => updateVendor(e.target.value)}
+          disabled={access.role !== 'vendor'}
+          className="input text-sm disabled:opacity-40"
+        >
+          <option value="">Sin tienda</option>
+          {vendors.map(vendor => <option key={vendor.id} value={vendor.id}>{vendor.name}</option>)}
+        </select>
+        <button
+          onClick={toggleActive}
+          className={`rounded-lg border px-3 py-2 text-xs font-semibold ${access.active ? 'border-green-700/30 text-green-300 bg-green-950/30' : 'border-red-700/30 text-red-300 bg-red-950/30'}`}
+        >
+          {access.active ? 'Activo' : 'Inactivo'}
+        </button>
+        <button onClick={remove} className="rounded-lg border border-red-700/30 bg-red-950/30 px-3 py-2 text-xs font-semibold text-red-300">
+          Borrar
+        </button>
+      </div>
+    </div>
   )
 }
 

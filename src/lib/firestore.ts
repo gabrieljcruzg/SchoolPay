@@ -4,7 +4,7 @@
  */
 
 import {
-  collection, doc, getDoc, getDocs, setDoc, updateDoc,
+  collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
   addDoc, query, where, orderBy, limit, onSnapshot,
   serverTimestamp, writeBatch, increment,
   type Unsubscribe,
@@ -47,7 +47,11 @@ export async function studentSignIn(studentId: string, pin: string) {
 }
 
 export async function kermesAccessSignIn(email: string, password: string) {
-  return signInWithEmailAndPassword(auth, email.trim().toLowerCase(), password)
+  const cleanEmail = email.trim().toLowerCase()
+  const accessEmail = cleanEmail.includes('@')
+    ? cleanEmail
+    : `${cleanEmail}@kermes.schoolpay.local`
+  return signInWithEmailAndPassword(auth, accessEmail, password)
 }
 
 export async function signOutUser() {
@@ -622,6 +626,10 @@ export async function createKermesAccessAccount(data: {
 
 export async function updateKermesAccess(id: string, data: Partial<Pick<KermesAccess, 'active' | 'role' | 'vendorId' | 'vendorName' | 'name'>>): Promise<void> {
   await updateDoc(doc(db, 'kermesAccess', id), data)
+}
+
+export async function deleteKermesAccess(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'kermesAccess', id))
 }
 
 export function subscribeToKermesTransactions(callback: (txs: KermesTransaction[]) => void): Unsubscribe {
