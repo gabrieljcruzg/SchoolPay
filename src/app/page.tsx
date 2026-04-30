@@ -22,7 +22,7 @@ const GROUP_ID = process.env.NEXT_PUBLIC_GROUP_NAME ?? '3A'
 type TeacherTab = 'panel' | 'orders' | 'config'
 
 export default function TeacherPage() {
-  const { user, loading, isTeacher } = useAuth()
+  const { user, firebaseUser, loading, isTeacher } = useAuth()
 
   if (loading) {
     return (
@@ -34,7 +34,7 @@ export default function TeacherPage() {
 
   if (!user || !isTeacher) {
     // No hay sesión de docente — muestra login
-    return <TeacherLogin />
+    return <TeacherLogin signedInEmail={firebaseUser?.email ?? null} />
   }
 
   return <TeacherDashboard teacherId={user.uid} groupId={GROUP_ID} />
@@ -42,7 +42,7 @@ export default function TeacherPage() {
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
 
-function TeacherLogin() {
+function TeacherLogin({ signedInEmail }: { signedInEmail: string | null }) {
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState('')
 
@@ -73,6 +73,12 @@ function TeacherLogin() {
             Inicia sesión con la cuenta de Google registrada como docente en el sistema.
           </p>
           {error && <p className="text-xs text-red-400 mb-3">{error}</p>}
+          {signedInEmail && (
+            <div className="text-xs text-red-300 bg-red-950/30 border border-red-900/60 rounded-lg p-3 mb-3 text-left">
+              La sesión de Google entró como <b>{signedInEmail}</b>, pero ese correo no coincide con el docente configurado.
+              Revisa <code className="text-red-200">NEXT_PUBLIC_TEACHER_EMAIL</code> en Vercel o cierra sesión y entra con la cuenta correcta.
+            </div>
+          )}
           <button
             onClick={handleLogin}
             disabled={loading}
@@ -92,6 +98,14 @@ function TeacherLogin() {
         <p className="text-xs text-slate-700">
           Solo funciona con el email registrado como docente en el sistema
         </p>
+        {signedInEmail && (
+          <button
+            onClick={() => signOutUser()}
+            className="mt-4 text-xs text-slate-500 underline underline-offset-4"
+          >
+            Cerrar esta sesión de Google
+          </button>
+        )}
       </div>
     </div>
   )

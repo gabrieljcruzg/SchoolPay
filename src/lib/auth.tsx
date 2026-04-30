@@ -36,16 +36,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return unsub
   }, [])
 
-  const teacherEmail = process.env.NEXT_PUBLIC_TEACHER_EMAIL ?? ''
+  const teacherEmail = (process.env.NEXT_PUBLIC_TEACHER_EMAIL ?? '').trim().toLowerCase()
+  const firebaseEmail = firebaseUser?.email?.trim().toLowerCase() ?? ''
 
   // Determina el rol según el email:
   // - el docente tiene un email real de Google
   // - los alumnos tienen email del formato {id}@schoolpay.local
   const role: UserRole | null = !firebaseUser
     ? null
-    : firebaseUser.email === teacherEmail
+    : firebaseEmail === teacherEmail
       ? 'teacher'
-      : firebaseUser.email?.endsWith('@schoolpay.local')
+      : firebaseEmail.endsWith('@schoolpay.local')
         ? 'student'
         : null
 
