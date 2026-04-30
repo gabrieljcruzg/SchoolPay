@@ -79,6 +79,10 @@ service cloud.firestore {
       allow read, write: if isTeacher();
     }
 
+    match /kermesProducts/{productId} {
+      allow read, write: if isTeacher();
+    }
+
     match /kermesTransactions/{txId} {
       allow read, write: if isTeacher();
     }

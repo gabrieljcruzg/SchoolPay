@@ -22,7 +22,7 @@ import { db, auth, secondaryAuth } from './firebase'
 import {
   type Student, type Transaction, type QuickAction,
   type StoreItem, type PurchaseOrder, type OrderStatus,
-  type KermesCard, type KermesVendor, type KermesTransaction,
+  type KermesCard, type KermesVendor, type KermesProduct, type KermesTransaction,
   getLevelForTotal, genPin, studentEmail,
 } from '@/types'
 
@@ -453,7 +453,14 @@ export async function rechargeKermesCard(cardId: string, amount: number, teacher
   await batch.commit()
 }
 
-export async function chargeKermesCard(cardId: string, vendor: KermesVendor, amount: number, teacherId: string, note?: string): Promise<void> {
+export async function chargeKermesCard(
+  cardId: string,
+  vendor: KermesVendor,
+  amount: number,
+  teacherId: string,
+  note?: string,
+  items?: { id: string; name: string; price: number; qty: number }[],
+): Promise<void> {
   if (amount <= 0) throw new Error('El cobro debe ser mayor a cero')
   const card = await findKermesCardByPublicId(cardId)
   if (!card) throw new Error('Tarjeta no encontrada')
@@ -465,6 +472,7 @@ export async function chargeKermesCard(cardId: string, vendor: KermesVendor, amo
     cardId: card.publicId,
     vendorId: vendor.id,
     vendorName: vendor.name,
+    items: items ?? [],
     amount: -amount,
     type: 'purchase',
     note: note ?? null,
@@ -495,6 +503,43 @@ export async function createKermesVendor(name: string): Promise<void> {
 
 export async function deleteKermesVendor(id: string): Promise<void> {
   await updateDoc(doc(db, 'kermesVendors', id), { active: false })
+}
+
+export function subscribeToKermesProducts(vendorId: string, callback: (products: KermesProduct[]) => void): Unsubscribe {
+  const q = query(
+    collection(db, 'kermesProducts'),
+    where('vendorId', '==', vendorId),
+    orderBy('name'),
+  )
+  return onSnapshot(q, snap => {
+    callback(
+      snap.docs
+        .map(d => ({ ...d.data(), id: d.id, createdAt: d.data().createdAt?.toDate() ?? new Date() }) as KermesProduct)
+        .filter(product => product.active !== false)
+    )
+  })
+}
+
+export async function createKermesProduct(vendorId: string, name: string, price: number): Promise<void> {
+  if (!vendorId) throw new Error('Selecciona una tienda')
+  if (!name.trim()) throw new Error('Escribe el nombre del producto')
+  if (price <= 0) throw new Error('El precio debe ser mayor a cero')
+
+  await addDoc(collection(db, 'kermesProducts'), {
+    vendorId,
+    name: name.trim(),
+    price,
+    active: true,
+    createdAt: serverTimestamp(),
+  })
+}
+
+export async function updateKermesProduct(id: string, data: Partial<Pick<KermesProduct, 'name' | 'price' | 'active'>>): Promise<void> {
+  await updateDoc(doc(db, 'kermesProducts', id), data)
+}
+
+export async function deleteKermesProduct(id: string): Promise<void> {
+  await updateDoc(doc(db, 'kermesProducts', id), { active: false })
 }
 
 export function subscribeToKermesTransactions(callback: (txs: KermesTransaction[]) => void): Unsubscribe {

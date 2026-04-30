@@ -49,6 +49,14 @@
       ]
     },
     {
+      "collectionGroup": "kermesProducts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "vendorId", "order": "ASCENDING" },
+        { "fieldPath": "name",     "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "storeItems",
       "queryScope": "COLLECTION",
       "fields": [

@@ -134,6 +134,15 @@ export interface KermesVendor {
   createdAt: Date
 }
 
+export interface KermesProduct {
+  id: string
+  vendorId: string
+  name: string
+  price: number
+  active: boolean
+  createdAt: Date
+}
+
 export type KermesTransactionType = 'recharge' | 'purchase'
 
 export interface KermesTransaction {
@@ -141,6 +150,7 @@ export interface KermesTransaction {
   cardId: string
   vendorId?: string
   vendorName?: string
+  items?: { id: string; name: string; price: number; qty: number }[]
   amount: number
   type: KermesTransactionType
   note?: string
