@@ -1,30 +1,34 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/lib/auth'
 import {
   chargeKermesCard,
+  createKermesAccessAccount,
   createKermesCard,
   createKermesProduct,
   createKermesVendor,
   deleteKermesProduct,
   deleteKermesVendor,
+  kermesAccessSignIn,
   rechargeKermesCard,
   signOutUser,
+  subscribeToKermesAccess,
   subscribeToKermesCards,
   subscribeToKermesProducts,
   subscribeToKermesTransactions,
   subscribeToKermesVendors,
+  updateKermesAccess,
   updateKermesProduct,
 } from '@/lib/firestore'
 import { useNFC, writeNFCTag } from '@/hooks/useNFC'
 import { Spinner, ToastList } from '@/components/ui'
 import { useToast } from '@/hooks/useToast'
-import { fmtCoins, type KermesCard, type KermesProduct, type KermesTransaction, type KermesVendor } from '@/types'
+import { fmtCoins, type AuthUser, type KermesAccess, type KermesCard, type KermesProduct, type KermesTransaction, type KermesVendor } from '@/types'
 
-type KermesTab = 'pos' | 'cards' | 'vendors' | 'history'
+type KermesTab = 'pos' | 'cards' | 'vendors' | 'access' | 'history'
 
 type Receipt = {
   type: 'charge' | 'recharge'
@@ -35,25 +39,30 @@ type Receipt = {
 }
 
 export default function KermesPage() {
-  const { user, loading, isTeacher } = useAuth()
+  const { user, loading, isTeacher, isKermesTerminal } = useAuth()
   const router = useRouter()
 
   useEffect(() => {
-    if (!loading && !isTeacher) router.replace('/')
-  }, [loading, isTeacher, router])
+    if (!loading && user?.role === 'student') router.replace('/')
+  }, [loading, user?.role, router])
 
-  if (loading || !isTeacher) {
+  if (loading) {
     return <div className="min-h-screen flex items-center justify-center"><Spinner size={32} /></div>
   }
 
-  return <KermesManager teacherId={user!.uid} />
+  if (!user || (!isTeacher && !isKermesTerminal)) {
+    return <KermesAccessLogin />
+  }
+
+  return <KermesManager user={user} isTeacher={isTeacher} />
 }
 
-function KermesManager({ teacherId }: { teacherId: string }) {
+function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean }) {
   const [cards, setCards] = useState<KermesCard[]>([])
   const [vendors, setVendors] = useState<KermesVendor[]>([])
   const [products, setProducts] = useState<KermesProduct[]>([])
   const [txs, setTxs] = useState<KermesTransaction[]>([])
+  const [accessList, setAccessList] = useState<KermesAccess[]>([])
   const [tab, setTab] = useState<KermesTab>('pos')
   const [selectedCardId, setSelectedCardId] = useState('')
   const [manualId, setManualId] = useState('')
@@ -64,19 +73,41 @@ function KermesManager({ teacherId }: { teacherId: string }) {
   const [receipt, setReceipt] = useState<Receipt | null>(null)
   const [busy, setBusy] = useState(false)
   const { toasts, show: showToast, dismiss } = useToast()
+  const canCharge = isTeacher || user.role === 'kermes_vendor'
+  const canRecharge = isTeacher || user.role === 'kermes_bank'
+  const visibleTabs: { id: KermesTab; label: string }[] = [
+    { id: 'pos', label: canRecharge && !canCharge ? 'Recargar' : 'Cobrar' },
+    ...(isTeacher ? [
+      { id: 'cards' as KermesTab, label: 'Tarjetas' },
+      { id: 'vendors' as KermesTab, label: 'Tiendas' },
+      { id: 'access' as KermesTab, label: 'Accesos' },
+      { id: 'history' as KermesTab, label: 'Historial' },
+    ] : []),
+  ]
 
   useEffect(() => {
     const unsubs = [
       subscribeToKermesCards(setCards),
       subscribeToKermesVendors(setVendors),
-      subscribeToKermesTransactions(setTxs),
     ]
+    if (isTeacher) {
+      unsubs.push(subscribeToKermesTransactions(setTxs))
+      unsubs.push(subscribeToKermesAccess(setAccessList))
+    }
     return () => unsubs.forEach(u => u())
-  }, [])
+  }, [isTeacher])
 
   useEffect(() => {
+    if (!isTeacher && tab !== 'pos') setTab('pos')
+  }, [isTeacher, tab])
+
+  useEffect(() => {
+    if (user.role === 'kermes_vendor' && user.kermesVendorId) {
+      setVendorId(user.kermesVendorId)
+      return
+    }
     if (!vendorId && vendors[0]) setVendorId(vendors[0].id)
-  }, [vendorId, vendors])
+  }, [user.role, user.kermesVendorId, vendorId, vendors])
 
   useEffect(() => {
     if (!vendorId) {
@@ -128,7 +159,7 @@ function KermesManager({ teacherId }: { teacherId: string }) {
         qty,
       }))
       const txNote = note.trim() || (items.length ? items.map(item => `${item.qty}x ${item.name}`).join(', ') : undefined)
-      const updatedCard = await chargeKermesCard(selectedCardId, selectedVendor, parsedAmount, teacherId, txNote, items)
+      const updatedCard = await chargeKermesCard(selectedCardId, selectedVendor, parsedAmount, user.uid, txNote, items)
       setReceipt({
         type: 'charge',
         amount: parsedAmount,
@@ -151,7 +182,7 @@ function KermesManager({ teacherId }: { teacherId: string }) {
     if (!selectedCardId) return
     setBusy(true)
     try {
-      const updatedCard = await rechargeKermesCard(selectedCardId, parsedAmount, teacherId, note.trim() || undefined)
+      const updatedCard = await rechargeKermesCard(selectedCardId, parsedAmount, user.uid, note.trim() || undefined)
       setReceipt({
         type: 'recharge',
         amount: parsedAmount,
@@ -175,18 +206,16 @@ function KermesManager({ teacherId }: { teacherId: string }) {
         <span className="text-white/10">|</span>
         <span className="font-semibold text-sm">Modo Kermés</span>
         <div className="ml-auto flex items-center gap-2">
+          <span className="hidden sm:inline text-xs text-slate-600">
+            {isTeacher ? 'Administrador' : `${user.kermesAccessName ?? 'Terminal'} · ${user.role === 'kermes_bank' ? 'Banco' : 'Tienda'}`}
+          </span>
           <button onClick={signOutUser} className="text-xs text-slate-700 hover:text-slate-500 transition-colors px-2">Salir</button>
         </div>
       </nav>
 
       <main className="max-w-5xl mx-auto px-4 py-6">
         <div className="flex gap-2 mb-5 overflow-x-auto">
-          {([
-            ['pos', 'Cobrar'],
-            ['cards', 'Tarjetas'],
-            ['vendors', 'Tiendas'],
-            ['history', 'Historial'],
-          ] as const).map(([id, label]) => (
+          {visibleTabs.map(({ id, label }) => (
             <button
               key={id}
               onClick={() => setTab(id)}
@@ -242,7 +271,12 @@ function KermesManager({ teacherId }: { teacherId: string }) {
               <div className="grid sm:grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs text-slate-600 block mb-1.5">Tienda</label>
-                  <select value={vendorId} onChange={e => setVendorId(e.target.value)} className="input">
+                  <select
+                    value={vendorId}
+                    onChange={e => setVendorId(e.target.value)}
+                    className="input disabled:opacity-70"
+                    disabled={user.role === 'kermes_vendor' && !isTeacher}
+                  >
                     {vendors.map(vendor => <option key={vendor.id} value={vendor.id}>{vendor.name}</option>)}
                   </select>
                 </div>
@@ -302,12 +336,16 @@ function KermesManager({ teacherId }: { teacherId: string }) {
 
               <input value={note} onChange={e => setNote(e.target.value)} className="input mt-3" placeholder="Nota opcional" />
               <div className="grid sm:grid-cols-2 gap-2 mt-3">
-                <button disabled={!selectedCard || !parsedAmount || busy} onClick={handleCharge} className="bg-red-950/40 border border-red-700/30 text-red-300 rounded-lg py-3 font-semibold disabled:opacity-40">
-                  Cobrar
-                </button>
-                <button disabled={!selectedCard || !parsedAmount || busy} onClick={handleRecharge} className="bg-green-950/40 border border-green-700/30 text-green-300 rounded-lg py-3 font-semibold disabled:opacity-40">
-                  Recargar
-                </button>
+                {canCharge && (
+                  <button disabled={!selectedCard || !parsedAmount || busy} onClick={handleCharge} className="bg-red-950/40 border border-red-700/30 text-red-300 rounded-lg py-3 font-semibold disabled:opacity-40">
+                    Cobrar
+                  </button>
+                )}
+                {canRecharge && (
+                  <button disabled={!selectedCard || !parsedAmount || busy} onClick={handleRecharge} className="bg-green-950/40 border border-green-700/30 text-green-300 rounded-lg py-3 font-semibold disabled:opacity-40">
+                    Recargar
+                  </button>
+                )}
               </div>
             </div>
 
@@ -317,12 +355,177 @@ function KermesManager({ teacherId }: { teacherId: string }) {
 
         {tab === 'cards' && <KermesCardsAdmin cards={cards} onToast={showToast} />}
         {tab === 'vendors' && <KermesVendorsAdmin vendors={vendors} selectedVendorId={vendorId} onSelectVendor={setVendorId} products={products} onToast={showToast} />}
+        {tab === 'access' && <KermesAccessAdmin accessList={accessList} vendors={vendors} onToast={showToast} />}
         {tab === 'history' && <KermesHistory txs={txs} />}
       </main>
 
       {receipt && <ReceiptModal receipt={receipt} onClose={() => setReceipt(null)} />}
       <ToastList toasts={toasts} onDismiss={dismiss} />
     </div>
+  )
+}
+
+function KermesAccessLogin() {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      await kermesAccessSignIn(email, password)
+    } catch {
+      setError('No se pudo iniciar sesión con esta cuenta.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <main className="min-h-screen bg-sp-bg flex items-center justify-center px-4">
+      <form onSubmit={handleSubmit} className="w-full max-w-sm rounded-2xl bg-sp-bg2 border border-white/10 p-5">
+        <Link href="/" className="text-xs text-slate-600 hover:text-slate-400">← Volver</Link>
+        <h1 className="text-xl font-bold mt-5 mb-1">Acceso Kermés</h1>
+        <p className="text-sm text-slate-600 mb-5">Entra con la cuenta asignada a este celular.</p>
+        <label className="text-xs text-slate-600 block mb-1.5">Correo</label>
+        <input value={email} onChange={e => setEmail(e.target.value)} className="input mb-3" autoComplete="username" />
+        <label className="text-xs text-slate-600 block mb-1.5">Contraseña</label>
+        <input value={password} onChange={e => setPassword(e.target.value)} className="input mb-4" type="password" autoComplete="current-password" />
+        {error && <div className="rounded-lg bg-red-950/40 border border-red-700/30 text-red-300 text-sm p-3 mb-3">{error}</div>}
+        <button disabled={busy || !email || !password} className="w-full bg-sp-gold/15 border border-sp-gold/30 text-sp-gold rounded-xl py-3 font-semibold disabled:opacity-40">
+          {busy ? 'Entrando...' : 'Entrar'}
+        </button>
+      </form>
+    </main>
+  )
+}
+
+function KermesAccessAdmin({
+  accessList,
+  vendors,
+  onToast,
+}: {
+  accessList: KermesAccess[]
+  vendors: KermesVendor[]
+  onToast: (msg: string, type?: 'ok' | 'err') => void
+}) {
+  const [name, setName] = useState('')
+  const [role, setRole] = useState<'vendor' | 'bank'>('vendor')
+  const [vendorId, setVendorId] = useState('')
+  const [lastAccount, setLastAccount] = useState<{ email: string; password: string } | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const selectedVendor = vendors.find(vendor => vendor.id === vendorId) ?? vendors[0]
+
+  const handleCreate = async () => {
+    setBusy(true)
+    try {
+      const account = await createKermesAccessAccount({
+        name,
+        role,
+        vendor: role === 'vendor' ? selectedVendor : undefined,
+      })
+      setLastAccount(account)
+      setName('')
+      onToast('Acceso creado', 'ok')
+    } catch (e: any) {
+      onToast(e.message ?? 'No se pudo crear el acceso', 'err')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const updateRole = async (access: KermesAccess, nextRole: 'vendor' | 'bank') => {
+    const vendor = vendors.find(v => v.id === access.vendorId) ?? vendors[0]
+    await updateKermesAccess(access.id, {
+      role: nextRole,
+      vendorId: nextRole === 'vendor' ? vendor?.id ?? '' : '',
+      vendorName: nextRole === 'vendor' ? vendor?.name ?? '' : '',
+    })
+    onToast('Rol actualizado', 'ok')
+  }
+
+  const updateVendor = async (access: KermesAccess, nextVendorId: string) => {
+    const vendor = vendors.find(v => v.id === nextVendorId)
+    if (!vendor) return
+    await updateKermesAccess(access.id, { vendorId: vendor.id, vendorName: vendor.name })
+    onToast('Tienda actualizada', 'ok')
+  }
+
+  return (
+    <section className="grid lg:grid-cols-[340px_1fr] gap-4">
+      <div className="rounded-xl border border-white/10 bg-sp-bg2 p-4">
+        <h1 className="text-lg font-bold mb-4">Crear acceso</h1>
+        <label className="text-xs text-slate-600 block mb-1.5">Nombre del celular</label>
+        <input value={name} onChange={e => setName(e.target.value)} className="input mb-3" placeholder="Caja bebidas / Banco 1" />
+        <label className="text-xs text-slate-600 block mb-1.5">Rol</label>
+        <select value={role} onChange={e => setRole(e.target.value as 'vendor' | 'bank')} className="input mb-3">
+          <option value="vendor">Tienda: solo cobrar</option>
+          <option value="bank">Banco: solo recargar</option>
+        </select>
+        {role === 'vendor' && (
+          <>
+            <label className="text-xs text-slate-600 block mb-1.5">Tienda asignada</label>
+            <select value={vendorId || selectedVendor?.id || ''} onChange={e => setVendorId(e.target.value)} className="input mb-4">
+              {vendors.map(vendor => <option key={vendor.id} value={vendor.id}>{vendor.name}</option>)}
+            </select>
+          </>
+        )}
+        <button onClick={handleCreate} disabled={busy || !name.trim() || (role === 'vendor' && !selectedVendor)} className="w-full rounded-xl bg-sp-gold/15 border border-sp-gold/30 text-sp-gold py-3 font-semibold disabled:opacity-40">
+          Crear cuenta
+        </button>
+        {lastAccount && (
+          <div className="mt-4 rounded-xl bg-sp-bg3 border border-white/5 p-3">
+            <div className="text-xs text-slate-600 mb-2">Entrega estos datos al celular asignado</div>
+            <div className="font-mono text-xs text-sp-accent break-all">{lastAccount.email}</div>
+            <div className="font-mono text-lg font-bold text-sp-gold mt-2">{lastAccount.password}</div>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-white/10 bg-sp-bg2 p-4">
+        <h1 className="text-lg font-bold mb-4">Cuentas de Kermés</h1>
+        <div className="space-y-2">
+          {accessList.map(access => (
+            <div key={access.id} className="rounded-xl bg-sp-bg3 border border-white/5 p-3">
+              <div className="grid lg:grid-cols-[1fr_150px_190px_auto] gap-2 items-center">
+                <div className="min-w-0">
+                  <div className="font-semibold truncate">{access.name}</div>
+                  <div className="font-mono text-xs text-slate-600 truncate">{access.email}</div>
+                </div>
+                <select value={access.role} onChange={e => updateRole(access, e.target.value as 'vendor' | 'bank')} className="input text-sm">
+                  <option value="vendor">Tienda</option>
+                  <option value="bank">Banco</option>
+                </select>
+                <select
+                  value={access.vendorId ?? ''}
+                  onChange={e => updateVendor(access, e.target.value)}
+                  disabled={access.role !== 'vendor'}
+                  className="input text-sm disabled:opacity-40"
+                >
+                  <option value="">Sin tienda</option>
+                  {vendors.map(vendor => <option key={vendor.id} value={vendor.id}>{vendor.name}</option>)}
+                </select>
+                <button
+                  onClick={() => updateKermesAccess(access.id, { active: !access.active }).then(() => onToast(access.active ? 'Acceso desactivado' : 'Acceso activado', 'ok'))}
+                  className={`rounded-lg border px-3 py-2 text-xs font-semibold ${access.active ? 'border-green-700/30 text-green-300 bg-green-950/30' : 'border-red-700/30 text-red-300 bg-red-950/30'}`}
+                >
+                  {access.active ? 'Activo' : 'Inactivo'}
+                </button>
+              </div>
+            </div>
+          ))}
+          {accessList.length === 0 && (
+            <div className="rounded-xl border border-dashed border-white/10 p-8 text-center text-sm text-slate-600">
+              Todavía no hay cuentas para celulares.
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
   )
 }
 

@@ -21,6 +21,30 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function kermesAccessPath() {
+      return /databases/$(database)/documents/kermesAccess/$(request.auth.uid);
+    }
+
+    function isKermesTerminal() {
+      return request.auth != null
+        && exists(kermesAccessPath())
+        && get(kermesAccessPath()).data.active == true;
+    }
+
+    function isKermesVendor() {
+      return isKermesTerminal()
+        && get(kermesAccessPath()).data.role == 'vendor';
+    }
+
+    function isKermesBank() {
+      return isKermesTerminal()
+        && get(kermesAccessPath()).data.role == 'bank';
+    }
+
+    function kermesVendorId() {
+      return get(kermesAccessPath()).data.vendorId;
+    }
+
     // ── Students ─────────────────────────────────────────────────────────────
     match /students/{studentId} {
       // El docente puede leer y escribir todo
@@ -71,21 +95,52 @@ service cloud.firestore {
     }
 
     // ── Kermes ───────────────────────────────────────────────────────────────
+    match /kermesAccess/{accessId} {
+      allow get: if isTeacher()
+        || (request.auth != null && request.auth.uid == accessId);
+      allow list, create, update, delete: if isTeacher();
+    }
+
     match /kermesCards/{cardId} {
       allow get: if true;
-      allow list, write: if isTeacher();
+      allow list: if isTeacher() || isKermesTerminal();
+      allow create, delete: if isTeacher();
+      allow update: if isTeacher()
+        || (
+          isKermesTerminal()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['balance'])
+          && (
+            (isKermesBank() && request.resource.data.balance >= resource.data.balance)
+            || (isKermesVendor() && request.resource.data.balance <= resource.data.balance)
+          )
+        );
     }
 
     match /kermesVendors/{vendorId} {
-      allow read, write: if isTeacher();
+      allow read: if isTeacher() || isKermesTerminal();
+      allow write: if isTeacher();
     }
 
     match /kermesProducts/{productId} {
-      allow read, write: if isTeacher();
+      allow read: if isTeacher() || isKermesTerminal();
+      allow write: if isTeacher();
     }
 
     match /kermesTransactions/{txId} {
-      allow read, write: if isTeacher();
+      allow read: if isTeacher();
+      allow create: if isTeacher()
+        || (
+          isKermesBank()
+          && request.resource.data.type == 'recharge'
+          && request.resource.data.amount > 0
+        )
+        || (
+          isKermesVendor()
+          && request.resource.data.type == 'purchase'
+          && request.resource.data.amount < 0
+          && request.resource.data.vendorId == kermesVendorId()
+        );
+      allow update, delete: if isTeacher();
     }
   }
 }

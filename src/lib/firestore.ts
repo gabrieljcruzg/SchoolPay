@@ -23,6 +23,7 @@ import {
   type Student, type Transaction, type QuickAction,
   type StoreItem, type PurchaseOrder, type OrderStatus,
   type KermesCard, type KermesVendor, type KermesProduct, type KermesTransaction,
+  type KermesAccess, type KermesAccessRole,
   getLevelForTotal, genPin, studentEmail,
 } from '@/types'
 
@@ -43,6 +44,10 @@ export async function teacherSignIn() {
 
 export async function studentSignIn(studentId: string, pin: string) {
   return signInWithEmailAndPassword(auth, studentEmail(studentId), pin)
+}
+
+export async function kermesAccessSignIn(email: string, password: string) {
+  return signInWithEmailAndPassword(auth, email.trim().toLowerCase(), password)
 }
 
 export async function signOutUser() {
@@ -566,6 +571,57 @@ export async function updateKermesProduct(id: string, data: Partial<Pick<KermesP
 
 export async function deleteKermesProduct(id: string): Promise<void> {
   await updateDoc(doc(db, 'kermesProducts', id), { active: false })
+}
+
+export function subscribeToKermesAccess(callback: (access: KermesAccess[]) => void): Unsubscribe {
+  const q = query(collection(db, 'kermesAccess'), orderBy('createdAt', 'desc'))
+  return onSnapshot(q, snap => {
+    callback(snap.docs.map(d => ({
+      ...d.data(),
+      id: d.id,
+      createdAt: d.data().createdAt?.toDate() ?? new Date(),
+    })) as KermesAccess[])
+  })
+}
+
+export async function createKermesAccessAccount(data: {
+  name: string
+  role: KermesAccessRole
+  vendor?: KermesVendor
+}): Promise<{ email: string; password: string }> {
+  const cleanName = data.name.trim()
+  if (!cleanName) throw new Error('Escribe un nombre para el acceso')
+  if (data.role === 'vendor' && !data.vendor) throw new Error('Selecciona la tienda de este acceso')
+
+  const slug = cleanName
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '.')
+    .replace(/(^\.|\.$)/g, '')
+    .slice(0, 24) || 'terminal'
+  const suffix = Math.random().toString(36).slice(2, 6)
+  const email = `${slug}.${suffix}@kermes.schoolpay.local`
+  const password = genPin()
+
+  const credential = await createUserWithEmailAndPassword(secondaryAuth, email, password)
+  await setDoc(doc(db, 'kermesAccess', credential.user.uid), {
+    uid: credential.user.uid,
+    email,
+    name: cleanName,
+    role: data.role,
+    vendorId: data.vendor?.id ?? null,
+    vendorName: data.vendor?.name ?? null,
+    active: true,
+    createdAt: serverTimestamp(),
+  })
+  await secondaryAuth.signOut()
+
+  return { email, password }
+}
+
+export async function updateKermesAccess(id: string, data: Partial<Pick<KermesAccess, 'active' | 'role' | 'vendorId' | 'vendorName' | 'name'>>): Promise<void> {
+  await updateDoc(doc(db, 'kermesAccess', id), data)
 }
 
 export function subscribeToKermesTransactions(callback: (txs: KermesTransaction[]) => void): Unsubscribe {

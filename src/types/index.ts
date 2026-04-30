@@ -158,15 +158,31 @@ export interface KermesTransaction {
   ts: Date
 }
 
+export type KermesAccessRole = 'vendor' | 'bank'
+
+export interface KermesAccess {
+  id: string
+  uid: string
+  email: string
+  name: string
+  role: KermesAccessRole
+  vendorId?: string
+  vendorName?: string
+  active: boolean
+  createdAt: Date
+}
+
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 
-export type UserRole = 'teacher' | 'student'
+export type UserRole = 'teacher' | 'student' | 'kermes_vendor' | 'kermes_bank'
 
 export interface AuthUser {
   uid: string
   email: string | null
   role: UserRole
   studentId?: string  // solo si role === 'student'
+  kermesVendorId?: string
+  kermesAccessName?: string
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
