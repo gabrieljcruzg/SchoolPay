@@ -13,6 +13,9 @@ export const metadata: Metadata = {
   title:       'SchoolPay — Economía Escolar',
   description: 'Sistema de economía virtual gamificada para el salón de clases',
   manifest:    '/manifest.json',
+  icons: {
+    icon: '/favicon.svg',
+  },
 }
 
 export const viewport: Viewport = {
