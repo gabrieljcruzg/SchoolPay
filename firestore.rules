@@ -1,0 +1,74 @@
+// firestore.rules
+// Deploy con: firebase deploy --only firestore:rules
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    function isTeacher() {
+      return request.auth != null
+        && request.auth.token.email == 'TU_EMAIL_AQUI@gmail.com';
+        // Reemplaza con process.env.NEXT_PUBLIC_TEACHER_EMAIL
+    }
+
+    function isStudent(studentId) {
+      // El email del alumno sigue el patrón {id}@schoolpay.local
+      return request.auth != null
+        && request.auth.token.email == studentId.lower() + '@schoolpay.local';
+    }
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // ── Students ─────────────────────────────────────────────────────────────
+    match /students/{studentId} {
+      // El docente puede leer y escribir todo
+      allow read, write: if isTeacher();
+      // El alumno solo puede leer su propio documento
+      allow read: if isStudent(studentId);
+    }
+
+    // ── Transactions ─────────────────────────────────────────────────────────
+    match /transactions/{txId} {
+      // Solo el docente escribe transacciones
+      allow read, write: if isTeacher();
+      // El alumno lee sus propias transacciones
+      allow read: if isAuthenticated()
+        && resource.data.studentId == request.auth.token.email.split('@')[0].upper();
+    }
+
+    // ── Orders ────────────────────────────────────────────────────────────────
+    match /orders/{orderId} {
+      // Docente: acceso total
+      allow read, write: if isTeacher();
+      // Alumno: crear y leer sus propias órdenes (no puede modificar status)
+      allow create: if isAuthenticated()
+        && request.resource.data.studentId == request.auth.token.email.split('@')[0].upper()
+        && request.resource.data.status == 'pending';
+      allow read: if isAuthenticated()
+        && resource.data.studentId == request.auth.token.email.split('@')[0].upper();
+    }
+
+    // ── Store Items ───────────────────────────────────────────────────────────
+    match /storeItems/{itemId} {
+      // Docente: acceso total
+      allow read, write: if isTeacher();
+      // Alumno: solo lectura (ver la tienda)
+      allow read: if isAuthenticated();
+    }
+
+    // ── Quick Actions ─────────────────────────────────────────────────────────
+    match /quickActions/{actionId} {
+      // Solo el docente gestiona las acciones
+      allow read, write: if isTeacher();
+    }
+
+    // ── Groups ────────────────────────────────────────────────────────────────
+    match /groups/{groupId} {
+      allow read, write: if isTeacher();
+      allow read: if isAuthenticated();
+    }
+  }
+}

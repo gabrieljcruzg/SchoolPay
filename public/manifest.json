@@ -1,0 +1,40 @@
+{
+  "name": "SchoolPay — Economía Escolar",
+  "short_name": "SchoolPay",
+  "description": "Sistema de economía virtual gamificada para el salón de clases",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1120",
+  "theme_color": "#0b1120",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Escanear tarjeta",
+      "short_name": "Escanear",
+      "description": "Ir directo al escáner NFC",
+      "url": "/?action=scan",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Portal Alumnos",
+      "short_name": "Portal",
+      "description": "Portal web para alumnos",
+      "url": "/portal",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

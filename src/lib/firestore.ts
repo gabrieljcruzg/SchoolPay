@@ -1,0 +1,366 @@
+/**
+ * firestore.ts — Capa de acceso a datos
+ * Todas las operaciones de lectura/escritura pasan por aquí.
+ */
+
+import {
+  collection, doc, getDoc, getDocs, setDoc, updateDoc,
+  addDoc, query, where, orderBy, limit, onSnapshot,
+  serverTimestamp, writeBatch, increment,
+  type Unsubscribe,
+} from 'firebase/firestore'
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  GoogleAuthProvider,
+  signOut,
+} from 'firebase/auth'
+import { db, auth, secondaryAuth } from './firebase'
+import {
+  type Student, type Transaction, type QuickAction,
+  type StoreItem, type PurchaseOrder, type OrderStatus,
+  getLevelForTotal, genPin, studentEmail,
+} from '@/types'
+
+// ─── AUTH ─────────────────────────────────────────────────────────────────────
+
+export async function teacherSignIn() {
+  return signInWithPopup(auth, new GoogleAuthProvider())
+}
+
+export async function studentSignIn(studentId: string, pin: string) {
+  return signInWithEmailAndPassword(auth, studentEmail(studentId), pin)
+}
+
+export async function signOutUser() {
+  return signOut(auth)
+}
+
+// ─── STUDENTS ─────────────────────────────────────────────────────────────────
+
+export async function createStudent(data: { name: string; groupId: string }): Promise<Student> {
+  const snap = await getDocs(
+    query(collection(db, 'students'), where('groupId', '==', data.groupId))
+  )
+  const num   = String(snap.size + 1).padStart(3, '0')
+  const id    = `${data.groupId}-${num}`
+  const pin   = genPin()
+  const email = studentEmail(id)
+  const avatar = data.name.split(',').map(p => p.trim()[0] ?? '').join('').toUpperCase().slice(0, 2)
+
+  // Crea la cuenta usando la app SECUNDARIA para no desloguear al docente
+  await createUserWithEmailAndPassword(secondaryAuth, email, pin)
+  await secondaryAuth.signOut()
+
+  const student: Student = {
+    id, name: data.name, avatar, pin, groupId: data.groupId,
+    balance: 100, totalEarned: 100, level: 'Novato',
+    streak: 0, badges: [], createdAt: new Date(),
+  }
+
+  const batch = writeBatch(db)
+  batch.set(doc(db, 'students', id), { ...student, createdAt: serverTimestamp() })
+  const txRef = doc(collection(db, 'transactions'))
+  batch.set(txRef, {
+    studentId: id, amount: 100, type: 'bienvenida',
+    label: '¡Bienvenido a SchoolPay!', teacherId: 'system',
+    reversible: false, ts: serverTimestamp(),
+  })
+  await batch.commit()
+  return student
+}
+
+export async function updateStudentName(studentId: string, name: string): Promise<void> {
+  const avatar = name.split(',').map(p => p.trim()[0] ?? '').join('').toUpperCase().slice(0, 2)
+  await updateDoc(doc(db, 'students', studentId), { name, avatar })
+}
+
+export async function resetStudentPin(studentId: string): Promise<string> {
+  const newPin = genPin()
+  // Guardamos el nuevo PIN en Firestore — el docente reimprime la tarjeta
+  await updateDoc(doc(db, 'students', studentId), { pin: newPin })
+  return newPin
+}
+
+export async function softDeleteStudent(studentId: string): Promise<void> {
+  await updateDoc(doc(db, 'students', studentId), { active: false })
+}
+
+export function subscribeToStudents(
+  groupId: string,
+  callback: (students: Student[]) => void,
+): Unsubscribe {
+  const q = query(
+    collection(db, 'students'),
+    where('groupId', '==', groupId),
+    orderBy('name'),
+  )
+  return onSnapshot(q, (snap) => {
+    callback(
+      snap.docs
+        .map(d => ({ ...d.data(), id: d.id, createdAt: d.data().createdAt?.toDate() ?? new Date() }) as Student)
+        .filter(s => (s as any).active !== false)
+    )
+  })
+}
+
+export async function getStudent(studentId: string): Promise<Student | null> {
+  const snap = await getDoc(doc(db, 'students', studentId))
+  return snap.exists() ? ({ ...snap.data(), id: snap.id } as Student) : null
+}
+
+export function subscribeToStudent(
+  studentId: string,
+  callback: (s: Student | null) => void,
+): Unsubscribe {
+  return onSnapshot(doc(db, 'students', studentId), snap => {
+    callback(snap.exists() ? ({ ...snap.data(), id: snap.id } as Student) : null)
+  })
+}
+
+// ─── TRANSACTIONS ─────────────────────────────────────────────────────────────
+
+export async function addTransaction(tx: {
+  studentId: string; amount: number; type: Transaction['type']
+  label: string; teacherId: string; reversible?: boolean
+}): Promise<string> {
+  const student = await getStudent(tx.studentId)
+  if (!student) throw new Error(`Alumno ${tx.studentId} no encontrado`)
+
+  const newBalance     = Math.max(0, student.balance + tx.amount)
+  const newTotalEarned = tx.amount > 0 ? student.totalEarned + tx.amount : student.totalEarned
+  const newLevel       = getLevelForTotal(newTotalEarned)
+
+  const batch  = writeBatch(db)
+  const txRef  = doc(collection(db, 'transactions'))
+
+  batch.update(doc(db, 'students', tx.studentId), {
+    balance: newBalance, totalEarned: newTotalEarned, level: newLevel,
+  })
+  batch.set(txRef, {
+    ...tx, reversible: tx.reversible ?? true, ts: serverTimestamp(),
+  })
+  await batch.commit()
+  return txRef.id
+}
+
+export async function reverseTransaction(txId: string, teacherId: string): Promise<void> {
+  const snap = await getDoc(doc(db, 'transactions', txId))
+  if (!snap.exists()) throw new Error('Transacción no encontrada')
+  const tx = snap.data() as Transaction
+  if (!tx.reversible) throw new Error('No se puede revertir')
+  await addTransaction({
+    studentId: tx.studentId, amount: -tx.amount, type: 'manual',
+    label: `↩ Reversión: ${tx.label}`, teacherId, reversible: false,
+  })
+  await updateDoc(doc(db, 'transactions', txId), { reversible: false })
+}
+
+export function subscribeToTransactions(
+  _groupId: string, limitN: number,
+  callback: (txs: Transaction[]) => void,
+): Unsubscribe {
+  const q = query(collection(db, 'transactions'), orderBy('ts', 'desc'), limit(limitN))
+  return onSnapshot(q, snap => {
+    callback(snap.docs.map(d => ({
+      ...d.data(), id: d.id, ts: d.data().ts?.toDate() ?? new Date(),
+    })) as Transaction[])
+  })
+}
+
+export function subscribeToStudentTransactions(
+  studentId: string,
+  callback: (txs: Transaction[]) => void,
+): Unsubscribe {
+  const q = query(
+    collection(db, 'transactions'),
+    where('studentId', '==', studentId),
+    orderBy('ts', 'desc'), limit(20),
+  )
+  return onSnapshot(q, snap => {
+    callback(snap.docs.map(d => ({
+      ...d.data(), id: d.id, ts: d.data().ts?.toDate() ?? new Date(),
+    })) as Transaction[])
+  })
+}
+
+// ─── QUICK ACTIONS ────────────────────────────────────────────────────────────
+
+export function subscribeToQuickActions(
+  groupId: string,
+  callback: (actions: QuickAction[]) => void,
+): Unsubscribe {
+  const q = query(
+    collection(db, 'quickActions'),
+    where('groupId', '==', groupId),
+    orderBy('order'),
+  )
+  return onSnapshot(q, async snap => {
+    if (snap.empty) { await seedDefaultActions(groupId); return }
+    callback(snap.docs.map(d => ({ ...d.data(), id: d.id })) as QuickAction[])
+  })
+}
+
+export async function saveQuickAction(groupId: string, action: Omit<QuickAction, 'id'>): Promise<string> {
+  const ref = await addDoc(collection(db, 'quickActions'), { ...action, groupId })
+  return ref.id
+}
+
+export async function updateQuickAction(id: string, data: Partial<QuickAction>): Promise<void> {
+  await updateDoc(doc(db, 'quickActions', id), data)
+}
+
+export async function deleteQuickAction(id: string): Promise<void> {
+  await updateDoc(doc(db, 'quickActions', id), { active: false })
+}
+
+// ─── STORE ────────────────────────────────────────────────────────────────────
+
+export function subscribeToStoreItems(
+  groupId: string,
+  callback: (items: StoreItem[]) => void,
+): Unsubscribe {
+  const q = query(
+    collection(db, 'storeItems'),
+    where('groupId', '==', groupId),
+    where('active', '==', true),
+    orderBy('price'),
+  )
+  return onSnapshot(q, async snap => {
+    if (snap.empty) { await seedDefaultStore(groupId); return }
+    callback(snap.docs.map(d => ({ ...d.data(), id: d.id })) as StoreItem[])
+  })
+}
+
+export async function saveStoreItem(groupId: string, item: Omit<StoreItem, 'id'>): Promise<string> {
+  const ref = await addDoc(collection(db, 'storeItems'), { ...item, groupId })
+  return ref.id
+}
+
+export async function updateStoreItem(id: string, data: Partial<StoreItem>): Promise<void> {
+  await updateDoc(doc(db, 'storeItems', id), data)
+}
+
+// ─── ORDERS ───────────────────────────────────────────────────────────────────
+
+export async function placeOrder(student: Student, item: StoreItem): Promise<string> {
+  if (student.balance < item.price) throw new Error('Saldo insuficiente')
+
+  const batch = writeBatch(db)
+  batch.update(doc(db, 'students', student.id), { balance: student.balance - item.price })
+  if (item.stock < 99) {
+    batch.update(doc(db, 'storeItems', item.id), { stock: increment(-1) })
+  }
+  const orderRef = doc(collection(db, 'orders'))
+  batch.set(orderRef, {
+    studentId: student.id, studentName: student.name, studentAvatar: student.avatar,
+    item: { id: item.id, name: item.name, emoji: item.emoji, price: item.price },
+    status: 'pending' as OrderStatus,
+    ts: serverTimestamp(), resolvedAt: null, teacherNote: null,
+  })
+  const txRef = doc(collection(db, 'transactions'))
+  batch.set(txRef, {
+    studentId: student.id, amount: -item.price, type: 'compra',
+    label: `Compra: ${item.name}`, teacherId: 'student',
+    reversible: false, ts: serverTimestamp(),
+  })
+  await batch.commit()
+  return orderRef.id
+}
+
+export async function resolveOrder(
+  orderId: string, status: 'approved' | 'rejected',
+  teacherId: string, teacherNote?: string,
+): Promise<void> {
+  const snap = await getDoc(doc(db, 'orders', orderId))
+  if (!snap.exists()) throw new Error('Orden no encontrada')
+  const order = snap.data() as PurchaseOrder
+
+  const batch = writeBatch(db)
+  batch.update(doc(db, 'orders', orderId), {
+    status, resolvedAt: serverTimestamp(), teacherNote: teacherNote ?? null,
+  })
+  if (status === 'rejected') {
+    batch.update(doc(db, 'students', order.studentId), { balance: increment(order.item.price) })
+    batch.set(doc(collection(db, 'transactions')), {
+      studentId: order.studentId, amount: order.item.price, type: 'devolucion',
+      label: `Devolución: ${order.item.name}`, teacherId,
+      reversible: false, ts: serverTimestamp(),
+    })
+    const itemSnap = await getDoc(doc(db, 'storeItems', order.item.id))
+    if (itemSnap.exists() && itemSnap.data().stock < 99) {
+      batch.update(doc(db, 'storeItems', order.item.id), { stock: increment(1) })
+    }
+  }
+  await batch.commit()
+}
+
+export function subscribeToOrders(
+  _groupId: string,
+  callback: (orders: PurchaseOrder[]) => void,
+): Unsubscribe {
+  const q = query(collection(db, 'orders'), orderBy('ts', 'desc'), limit(60))
+  return onSnapshot(q, snap => {
+    callback(snap.docs.map(d => ({
+      ...d.data(), id: d.id,
+      ts:         d.data().ts?.toDate()         ?? new Date(),
+      resolvedAt: d.data().resolvedAt?.toDate() ?? undefined,
+    })) as PurchaseOrder[])
+  })
+}
+
+export function subscribeToStudentOrders(
+  studentId: string,
+  callback: (orders: PurchaseOrder[]) => void,
+): Unsubscribe {
+  const q = query(
+    collection(db, 'orders'),
+    where('studentId', '==', studentId),
+    orderBy('ts', 'desc'), limit(20),
+  )
+  return onSnapshot(q, snap => {
+    callback(snap.docs.map(d => ({
+      ...d.data(), id: d.id,
+      ts:         d.data().ts?.toDate()         ?? new Date(),
+      resolvedAt: d.data().resolvedAt?.toDate() ?? undefined,
+    })) as PurchaseOrder[])
+  })
+}
+
+// ─── SEEDERS ──────────────────────────────────────────────────────────────────
+
+async function seedDefaultActions(groupId: string) {
+  const defaults: Omit<QuickAction, 'id'>[] = [
+    { emoji: '📝', label: 'Tarea entregada',      amount:  50,  type: 'earn', active: true, order: 0 },
+    { emoji: '✅', label: 'Asistencia puntual',   amount:  15,  type: 'earn', active: true, order: 1 },
+    { emoji: '🙋', label: 'Participación',        amount:  25,  type: 'earn', active: true, order: 2 },
+    { emoji: '🧠', label: 'Examen ≥ 9',           amount: 100,  type: 'earn', active: true, order: 3 },
+    { emoji: '🤝', label: 'Ayudó a compañero',    amount:  30,  type: 'earn', active: true, order: 4 },
+    { emoji: '⚡', label: 'Reto extra',           amount:  80,  type: 'earn', active: true, order: 5 },
+    { emoji: '🚫', label: 'Falta de respeto',     amount: -80,  type: 'lose', active: true, order: 6 },
+    { emoji: '❌', label: 'No entregó tarea',     amount: -30,  type: 'lose', active: true, order: 7 },
+    { emoji: '📵', label: 'Celular sin permiso',  amount: -25,  type: 'lose', active: true, order: 8 },
+    { emoji: '⚠️', label: 'Conducta disruptiva',  amount: -40,  type: 'lose', active: true, order: 9 },
+  ]
+  const batch = writeBatch(db)
+  defaults.forEach(a => batch.set(doc(collection(db, 'quickActions')), { ...a, groupId }))
+  await batch.commit()
+}
+
+async function seedDefaultStore(groupId: string) {
+  const defaults: Omit<StoreItem, 'id'>[] = [
+    { emoji: '🎵', name: 'Escuchar música (audífonos)',      price: 100, stock: 99, maxPerStudent: 99, category: 'daily',    active: true, requiresApproval: true },
+    { emoji: '💺', name: 'Elegir lugar en el salón',         price: 120, stock:  5, maxPerStudent:  2, category: 'daily',    active: true, requiresApproval: true },
+    { emoji: '📝', name: 'Saltarse una tarea',               price: 150, stock:  2, maxPerStudent:  2, category: 'academic', active: true, requiresApproval: true },
+    { emoji: '⏰', name: 'Tiempo extra en examen (+10 min)', price: 200, stock:  1, maxPerStudent:  1, category: 'academic', active: true, requiresApproval: true },
+    { emoji: '📅', name: 'Cambiar fecha de entrega',         price: 180, stock:  3, maxPerStudent:  3, category: 'academic', active: true, requiresApproval: true },
+    { emoji: '⭐', name: '+0.5 pts en tarea',                price: 250, stock:  1, maxPerStudent:  1, category: 'academic', active: true, requiresApproval: true },
+    { emoji: '✅', name: 'Tarea automática (10/10)',         price: 350, stock:  1, maxPerStudent:  1, category: 'premium',  active: true, requiresApproval: true },
+    { emoji: '🎤', name: 'Ser el maestro 15 min',            price: 500, stock:  1, maxPerStudent:  1, category: 'premium',  active: true, requiresApproval: true },
+    { emoji: '🌟', name: 'Punto extra en examen parcial',    price: 600, stock:  1, maxPerStudent:  1, category: 'premium',  active: true, requiresApproval: true },
+  ]
+  const batch = writeBatch(db)
+  defaults.forEach(item => batch.set(doc(collection(db, 'storeItems')), { ...item, groupId }))
+  await batch.commit()
+}
