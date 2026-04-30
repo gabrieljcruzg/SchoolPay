@@ -15,14 +15,15 @@ import { OrdersPanel } from '@/components/teacher/OrdersPanel'
 import { ConfigPanel } from '@/components/teacher/ConfigPanel'
 import { Avatar, LevelBadge, NFCButton, ToastList, Spinner, EmptyState, SectionHeader } from '@/components/ui'
 import { fmtCoins, type Student, type QuickAction, type PurchaseOrder, type Transaction } from '@/types'
+import { useSelectedGroup } from '@/lib/groups'
+import { GroupSelect } from '@/components/teacher/GroupSelect'
 import Link from 'next/link'
-
-const GROUP_ID = process.env.NEXT_PUBLIC_GROUP_NAME ?? '3A'
 
 type TeacherTab = 'panel' | 'orders' | 'config'
 
 export default function TeacherPage() {
   const { user, firebaseUser, loading, isTeacher } = useAuth()
+  const { groupId, groups, setGroupId } = useSelectedGroup()
 
   if (loading) {
     return (
@@ -37,7 +38,7 @@ export default function TeacherPage() {
     return <TeacherLogin signedInEmail={firebaseUser?.email ?? null} />
   }
 
-  return <TeacherDashboard teacherId={user.uid} groupId={GROUP_ID} />
+  return <TeacherDashboard teacherId={user.uid} groupId={groupId} groups={groups} onGroupChange={setGroupId} />
 }
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
@@ -113,7 +114,17 @@ function TeacherLogin({ signedInEmail }: { signedInEmail: string | null }) {
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 
-function TeacherDashboard({ teacherId, groupId }: { teacherId: string; groupId: string }) {
+function TeacherDashboard({
+  teacherId,
+  groupId,
+  groups,
+  onGroupChange,
+}: {
+  teacherId: string
+  groupId: string
+  groups: string[]
+  onGroupChange: (groupId: string) => void
+}) {
   const [students,  setStudents]  = useState<Student[]>([])
   const [orders,    setOrders]    = useState<PurchaseOrder[]>([])
   const [txLog,     setTxLog]     = useState<Transaction[]>([])
@@ -192,9 +203,15 @@ function TeacherDashboard({ teacherId, groupId }: { teacherId: string; groupId: 
         <div className="flex items-center gap-2.5">
           <div className="w-7 h-7 bg-gradient-to-br from-sp-gold to-yellow-400 rounded-lg flex items-center justify-center text-xs font-black text-yellow-950">₡</div>
           <span className="font-bold text-sm">{process.env.NEXT_PUBLIC_SCHOOL_NAME ?? 'SchoolPay'}</span>
-          <span className="text-xs text-slate-700 border-l border-white/8 pl-2.5">{groupId}</span>
+          <GroupSelect groupId={groupId} groups={groups} onChange={onGroupChange} />
         </div>
         <div className="flex items-center gap-2">
+          <Link
+            href="/kermes"
+            className="text-xs px-3 py-1.5 rounded-lg border border-white/8 text-slate-500 hover:border-white/20 hover:text-slate-300 transition-colors"
+          >
+            🎪 Kermés
+          </Link>
           <Link
             href="/students"
             className="text-xs px-3 py-1.5 rounded-lg border border-white/8 text-slate-500 hover:border-white/20 hover:text-slate-300 transition-colors"

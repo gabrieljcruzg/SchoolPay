@@ -7,14 +7,15 @@ import { subscribeToStudents } from '@/lib/firestore'
 import { writeNFCTag }         from '@/hooks/useNFC'
 import { Avatar, Spinner }     from '@/components/ui'
 import { LEVEL_COLORS, type Student } from '@/types'
+import { GroupSelect } from '@/components/teacher/GroupSelect'
+import { useSelectedGroup } from '@/lib/groups'
 import Link from 'next/link'
-
-const GROUP_ID = process.env.NEXT_PUBLIC_GROUP_NAME ?? '3A'
 
 type StepStatus = 'waiting' | 'writing' | 'done' | 'error'
 
 export default function NFCWriterPage() {
   const { loading, isTeacher } = useAuth()
+  const { groupId, groups, setGroupId } = useSelectedGroup()
   const router = useRouter()
 
   useEffect(() => {
@@ -25,10 +26,14 @@ export default function NFCWriterPage() {
     return <div className="min-h-screen flex items-center justify-center"><Spinner size={32} /></div>
   }
 
-  return <NFCWriter groupId={GROUP_ID} />
+  return <NFCWriter groupId={groupId} groups={groups} onGroupChange={setGroupId} />
 }
 
-function NFCWriter({ groupId }: { groupId: string }) {
+function NFCWriter({ groupId, groups, onGroupChange }: {
+  groupId: string
+  groups: string[]
+  onGroupChange: (groupId: string) => void
+}) {
   const [students,   setStudents]   = useState<Student[]>([])
   const [current,    setCurrent]    = useState(0)
   const [status,     setStatus]     = useState<StepStatus>('waiting')
@@ -82,6 +87,7 @@ function NFCWriter({ groupId }: { groupId: string }) {
         <Link href="/students" className="text-slate-600 hover:text-slate-400 text-sm transition-colors">← Alumnos</Link>
         <span className="text-white/10">|</span>
         <span className="font-semibold text-sm">Escritura NFC en serie</span>
+        <GroupSelect groupId={groupId} groups={groups} onChange={onGroupChange} />
       </nav>
 
       <div className="flex-1 flex flex-col max-w-md mx-auto w-full px-4 py-6">

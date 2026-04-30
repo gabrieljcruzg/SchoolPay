@@ -8,8 +8,7 @@ service cloud.firestore {
     // ── Helpers ──────────────────────────────────────────────────────────────
     function isTeacher() {
       return request.auth != null
-        && request.auth.token.email == 'TU_EMAIL_AQUI@gmail.com';
-        // Reemplaza con process.env.NEXT_PUBLIC_TEACHER_EMAIL
+        && request.auth.token.email == 'gabrieljacielcruz@gmail.com';
     }
 
     function isStudent(studentId) {
@@ -69,6 +68,19 @@ service cloud.firestore {
     match /groups/{groupId} {
       allow read, write: if isTeacher();
       allow read: if isAuthenticated();
+    }
+
+    // ── Kermes ───────────────────────────────────────────────────────────────
+    match /kermesCards/{cardId} {
+      allow read, write: if isTeacher();
+    }
+
+    match /kermesVendors/{vendorId} {
+      allow read, write: if isTeacher();
+    }
+
+    match /kermesTransactions/{txId} {
+      allow read, write: if isTeacher();
     }
   }
 }

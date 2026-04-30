@@ -22,6 +22,7 @@ import { db, auth, secondaryAuth } from './firebase'
 import {
   type Student, type Transaction, type QuickAction,
   type StoreItem, type PurchaseOrder, type OrderStatus,
+  type KermesCard, type KermesVendor, type KermesTransaction,
   getLevelForTotal, genPin, studentEmail,
 } from '@/types'
 
@@ -76,6 +77,7 @@ export async function createStudent(data: { name: string; groupId: string }): Pr
   batch.set(txRef, {
     studentId: id, amount: 100, type: 'bienvenida',
     label: '¡Bienvenido a SchoolPay!', teacherId: 'system',
+    groupId: data.groupId,
     reversible: false, ts: serverTimestamp(),
   })
   await batch.commit()
@@ -158,6 +160,7 @@ export async function addTransaction(tx: {
   })
   batch.set(txRef, {
     ...tx, reversible: tx.reversible ?? true, ts: serverTimestamp(),
+    groupId: student.groupId,
   })
   await batch.commit()
   return txRef.id
@@ -176,10 +179,15 @@ export async function reverseTransaction(txId: string, teacherId: string): Promi
 }
 
 export function subscribeToTransactions(
-  _groupId: string, limitN: number,
+  groupId: string, limitN: number,
   callback: (txs: Transaction[]) => void,
 ): Unsubscribe {
-  const q = query(collection(db, 'transactions'), orderBy('ts', 'desc'), limit(limitN))
+  const q = query(
+    collection(db, 'transactions'),
+    where('groupId', '==', groupId),
+    orderBy('ts', 'desc'),
+    limit(limitN),
+  )
   return onSnapshot(q, snap => {
     callback(snap.docs.map(d => ({
       ...d.data(), id: d.id, ts: d.data().ts?.toDate() ?? new Date(),
@@ -216,7 +224,11 @@ export function subscribeToQuickActions(
   )
   return onSnapshot(q, async snap => {
     if (snap.empty) { await seedDefaultActions(groupId); return }
-    callback(snap.docs.map(d => ({ ...d.data(), id: d.id })) as QuickAction[])
+    callback(
+      snap.docs
+        .map(d => ({ ...d.data(), id: d.id }) as QuickAction)
+        .filter(action => action.active !== false)
+    )
   })
 }
 
@@ -273,6 +285,7 @@ export async function placeOrder(student: Student, item: StoreItem): Promise<str
   const orderRef = doc(collection(db, 'orders'))
   batch.set(orderRef, {
     studentId: student.id, studentName: student.name, studentAvatar: student.avatar,
+    groupId: student.groupId,
     item: { id: item.id, name: item.name, emoji: item.emoji, price: item.price },
     status: 'pending' as OrderStatus,
     ts: serverTimestamp(), resolvedAt: null, teacherNote: null,
@@ -281,6 +294,7 @@ export async function placeOrder(student: Student, item: StoreItem): Promise<str
   batch.set(txRef, {
     studentId: student.id, amount: -item.price, type: 'compra',
     label: `Compra: ${item.name}`, teacherId: 'student',
+    groupId: student.groupId,
     reversible: false, ts: serverTimestamp(),
   })
   await batch.commit()
@@ -304,6 +318,7 @@ export async function resolveOrder(
     batch.set(doc(collection(db, 'transactions')), {
       studentId: order.studentId, amount: order.item.price, type: 'devolucion',
       label: `Devolución: ${order.item.name}`, teacherId,
+      groupId: (order as any).groupId,
       reversible: false, ts: serverTimestamp(),
     })
     const itemSnap = await getDoc(doc(db, 'storeItems', order.item.id))
@@ -315,10 +330,15 @@ export async function resolveOrder(
 }
 
 export function subscribeToOrders(
-  _groupId: string,
+  groupId: string,
   callback: (orders: PurchaseOrder[]) => void,
 ): Unsubscribe {
-  const q = query(collection(db, 'orders'), orderBy('ts', 'desc'), limit(60))
+  const q = query(
+    collection(db, 'orders'),
+    where('groupId', '==', groupId),
+    orderBy('ts', 'desc'),
+    limit(60),
+  )
   return onSnapshot(q, snap => {
     callback(snap.docs.map(d => ({
       ...d.data(), id: d.id,
@@ -381,4 +401,117 @@ async function seedDefaultStore(groupId: string) {
   const batch = writeBatch(db)
   defaults.forEach(item => batch.set(doc(collection(db, 'storeItems')), { ...item, groupId }))
   await batch.commit()
+}
+
+// ─── KERMES ──────────────────────────────────────────────────────────────────
+
+export function subscribeToKermesCards(callback: (cards: KermesCard[]) => void): Unsubscribe {
+  const q = query(collection(db, 'kermesCards'), orderBy('createdAt', 'desc'))
+  return onSnapshot(q, snap => {
+    callback(
+      snap.docs
+        .map(d => ({ ...d.data(), id: d.id, createdAt: d.data().createdAt?.toDate() ?? new Date() }) as KermesCard)
+        .filter(card => card.active !== false)
+    )
+  })
+}
+
+export async function createKermesCard(label: string): Promise<KermesCard> {
+  const ref = doc(collection(db, 'kermesCards'))
+  const card: Omit<KermesCard, 'createdAt'> = {
+    id: `K-${ref.id.slice(0, 8).toUpperCase()}`,
+    label,
+    balance: 0,
+    active: true,
+  }
+  await setDoc(ref, { ...card, createdAt: serverTimestamp() })
+  return { ...card, createdAt: new Date() }
+}
+
+export async function rechargeKermesCard(cardId: string, amount: number, teacherId: string, note?: string): Promise<void> {
+  if (amount <= 0) throw new Error('La recarga debe ser mayor a cero')
+  const card = await findKermesCardByPublicId(cardId)
+  if (!card) throw new Error('Tarjeta no encontrada')
+
+  const batch = writeBatch(db)
+  batch.update(doc(db, 'kermesCards', card.docId), { balance: increment(amount) })
+  batch.set(doc(collection(db, 'kermesTransactions')), {
+    cardId: card.publicId,
+    amount,
+    type: 'recharge',
+    note: note ?? null,
+    teacherId,
+    ts: serverTimestamp(),
+  })
+  await batch.commit()
+}
+
+export async function chargeKermesCard(cardId: string, vendor: KermesVendor, amount: number, teacherId: string, note?: string): Promise<void> {
+  if (amount <= 0) throw new Error('El cobro debe ser mayor a cero')
+  const card = await findKermesCardByPublicId(cardId)
+  if (!card) throw new Error('Tarjeta no encontrada')
+  if (card.balance < amount) throw new Error('Saldo insuficiente')
+
+  const batch = writeBatch(db)
+  batch.update(doc(db, 'kermesCards', card.docId), { balance: increment(-amount) })
+  batch.set(doc(collection(db, 'kermesTransactions')), {
+    cardId: card.publicId,
+    vendorId: vendor.id,
+    vendorName: vendor.name,
+    amount: -amount,
+    type: 'purchase',
+    note: note ?? null,
+    teacherId,
+    ts: serverTimestamp(),
+  })
+  await batch.commit()
+}
+
+export function subscribeToKermesVendors(callback: (vendors: KermesVendor[]) => void): Unsubscribe {
+  const q = query(collection(db, 'kermesVendors'), orderBy('name'))
+  return onSnapshot(q, snap => {
+    callback(
+      snap.docs
+        .map(d => ({ ...d.data(), id: d.id, createdAt: d.data().createdAt?.toDate() ?? new Date() }) as KermesVendor)
+        .filter(vendor => vendor.active !== false)
+    )
+  })
+}
+
+export async function createKermesVendor(name: string): Promise<void> {
+  await addDoc(collection(db, 'kermesVendors'), {
+    name,
+    active: true,
+    createdAt: serverTimestamp(),
+  })
+}
+
+export async function deleteKermesVendor(id: string): Promise<void> {
+  await updateDoc(doc(db, 'kermesVendors', id), { active: false })
+}
+
+export function subscribeToKermesTransactions(callback: (txs: KermesTransaction[]) => void): Unsubscribe {
+  const q = query(collection(db, 'kermesTransactions'), orderBy('ts', 'desc'), limit(80))
+  return onSnapshot(q, snap => {
+    callback(snap.docs.map(d => ({
+      ...d.data(),
+      id: d.id,
+      ts: d.data().ts?.toDate() ?? new Date(),
+    })) as KermesTransaction[])
+  })
+}
+
+async function findKermesCardByPublicId(cardId: string): Promise<(KermesCard & { docId: string; publicId: string }) | null> {
+  const publicId = cardId.trim().toUpperCase()
+  const snap = await getDocs(query(collection(db, 'kermesCards'), where('id', '==', publicId), limit(1)))
+  const docSnap = snap.docs[0]
+  if (!docSnap) return null
+  const data = docSnap.data()
+  return {
+    ...data,
+    id: data.id,
+    publicId: data.id,
+    docId: docSnap.id,
+    createdAt: data.createdAt?.toDate() ?? new Date(),
+  } as KermesCard & { docId: string; publicId: string }
 }

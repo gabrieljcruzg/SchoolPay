@@ -9,8 +9,6 @@ import { ToastList, Spinner } from '@/components/ui'
 import { useToast } from '@/hooks/useToast'
 import { type Student, type StoreItem, type PurchaseOrder } from '@/types'
 
-const GROUP_ID = process.env.NEXT_PUBLIC_GROUP_NAME ?? '3A'
-
 type PortalTab = 'store' | 'orders'
 
 export default function StudentPortalPage() {
@@ -28,10 +26,10 @@ export default function StudentPortalPage() {
     return <StudentLoginForm onSuccess={() => {}} />
   }
 
-  return <StudentPortal studentId={user.studentId!} groupId={GROUP_ID} />
+  return <StudentPortal studentId={user.studentId!} />
 }
 
-function StudentPortal({ studentId, groupId }: { studentId: string; groupId: string }) {
+function StudentPortal({ studentId }: { studentId: string }) {
   const [student,  setStudent]   = useState<Student | null>(null)
   const [items,    setItems]     = useState<StoreItem[]>([])
   const [orders,   setOrders]    = useState<PurchaseOrder[]>([])
@@ -41,11 +39,15 @@ function StudentPortal({ studentId, groupId }: { studentId: string; groupId: str
   useEffect(() => {
     const unsubs = [
       subscribeToStudent(studentId, setStudent),
-      subscribeToStoreItems(groupId, setItems),
       subscribeToStudentOrders(studentId, setOrders),
     ]
     return () => unsubs.forEach(u => u())
-  }, [studentId, groupId])
+  }, [studentId])
+
+  useEffect(() => {
+    if (!student?.groupId) return
+    return subscribeToStoreItems(student.groupId, setItems)
+  }, [student?.groupId])
 
   const handleBuy = async (item: StoreItem) => {
     if (!student) return

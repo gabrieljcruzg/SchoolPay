@@ -83,7 +83,7 @@ function ActionsConfig({ groupId, actions, onToast }: {
           <div className={`text-xs uppercase tracking-wider mb-2 ${type === 'earn' ? 'text-green-500' : 'text-red-500'}`}>
             {type === 'earn' ? '● Ganan' : '● Pierden'}
           </div>
-          {actions.filter(a => a.type === type).map((a) => (
+          {actions.filter(a => a.type === type && a.active !== false).map((a) => (
             <div key={a.id} className="mb-1.5">
               {editing === a.id ? (
                 <div className="bg-white/[0.03] border border-white/8 rounded-lg p-2.5 flex flex-col gap-2">

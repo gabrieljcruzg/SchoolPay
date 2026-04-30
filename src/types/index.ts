@@ -41,6 +41,7 @@ export type TransactionType =
 export interface Transaction {
   id: string
   studentId: string
+  groupId: string
   amount: number          // positivo = ganó, negativo = perdió
   type: TransactionType
   label: string           // descripción legible
@@ -85,6 +86,7 @@ export type OrderStatus = 'pending' | 'approved' | 'rejected'
 export interface PurchaseOrder {
   id: string
   studentId: string
+  groupId: string
   studentName: string
   studentAvatar: string
   item: Pick<StoreItem, 'id' | 'name' | 'emoji' | 'price'>
@@ -113,6 +115,37 @@ export interface Badge {
   name: string
   description: string
   condition: string  // descripción legible de cómo se obtiene
+}
+
+// ─── KERMES ──────────────────────────────────────────────────────────────────
+
+export interface KermesCard {
+  id: string
+  label: string
+  balance: number
+  active: boolean
+  createdAt: Date
+}
+
+export interface KermesVendor {
+  id: string
+  name: string
+  active: boolean
+  createdAt: Date
+}
+
+export type KermesTransactionType = 'recharge' | 'purchase'
+
+export interface KermesTransaction {
+  id: string
+  cardId: string
+  vendorId?: string
+  vendorName?: string
+  amount: number
+  type: KermesTransactionType
+  note?: string
+  teacherId: string
+  ts: Date
 }
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────

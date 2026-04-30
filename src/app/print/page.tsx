@@ -6,13 +6,15 @@ import { useAuth }   from '@/lib/auth'
 import { subscribeToStudents } from '@/lib/firestore'
 import { Spinner }   from '@/components/ui'
 import { LEVEL_COLORS, type Student } from '@/types'
+import { GroupSelect } from '@/components/teacher/GroupSelect'
+import { useSelectedGroup } from '@/lib/groups'
 import Link from 'next/link'
 
-const GROUP_ID   = process.env.NEXT_PUBLIC_GROUP_NAME  ?? '3A'
 const SCHOOL     = process.env.NEXT_PUBLIC_SCHOOL_NAME ?? 'Secundaria'
 
 export default function PrintPage() {
   const { loading, isTeacher } = useAuth()
+  const { groupId, groups, setGroupId } = useSelectedGroup()
   const router = useRouter()
 
   useEffect(() => {
@@ -23,10 +25,15 @@ export default function PrintPage() {
     return <div className="min-h-screen flex items-center justify-center"><Spinner size={32} /></div>
   }
 
-  return <PrintLayout groupId={GROUP_ID} school={SCHOOL} />
+  return <PrintLayout groupId={groupId} groups={groups} onGroupChange={setGroupId} school={SCHOOL} />
 }
 
-function PrintLayout({ groupId, school }: { groupId: string; school: string }) {
+function PrintLayout({ groupId, groups, onGroupChange, school }: {
+  groupId: string
+  groups: string[]
+  onGroupChange: (groupId: string) => void
+  school: string
+}) {
   const [students, setStudents] = useState<Student[]>([])
   const [pinHidden, setPinHidden] = useState(true)  // para el modo "raspadito"
   const [cols, setCols] = useState<2 | 3>(3)        // tarjetas por fila
@@ -46,6 +53,7 @@ function PrintLayout({ groupId, school }: { groupId: string; school: string }) {
         </Link>
         <span className="text-white/10">|</span>
         <span className="font-semibold text-sm">Imprimir tarjetas</span>
+        <GroupSelect groupId={groupId} groups={groups} onChange={onGroupChange} />
 
         <div className="ml-auto flex items-center gap-3 flex-wrap">
           <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer select-none">

@@ -11,12 +11,13 @@ import { writeNFCTag } from '@/hooks/useNFC'
 import { Avatar, LevelBadge, Spinner, ToastList } from '@/components/ui'
 import { useToast } from '@/hooks/useToast'
 import { fmtCoins, LEVEL_COLORS, type Student } from '@/types'
+import { normalizeGroupId, useSelectedGroup } from '@/lib/groups'
+import { GroupSelect } from '@/components/teacher/GroupSelect'
 import Link from 'next/link'
-
-const GROUP_ID = process.env.NEXT_PUBLIC_GROUP_NAME ?? '3A'
 
 export default function StudentsPage() {
   const { user, loading, isTeacher } = useAuth()
+  const { groupId, groups, setGroupId } = useSelectedGroup()
   const router = useRouter()
 
   useEffect(() => {
@@ -27,7 +28,7 @@ export default function StudentsPage() {
     return <div className="min-h-screen flex items-center justify-center"><Spinner size={32} /></div>
   }
 
-  return <StudentManager groupId={GROUP_ID} teacherId={user!.uid} />
+  return <StudentManager groupId={groupId} groups={groups} onGroupChange={setGroupId} teacherId={user!.uid} />
 }
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
@@ -39,7 +40,17 @@ type ImportResult = {
   failed: { name: string; error: string }[]
 }
 
-function StudentManager({ groupId, teacherId }: { groupId: string; teacherId: string }) {
+function StudentManager({
+  groupId,
+  groups,
+  onGroupChange,
+  teacherId,
+}: {
+  groupId: string
+  groups: string[]
+  onGroupChange: (groupId: string) => void
+  teacherId: string
+}) {
   const [students, setStudents] = useState<Student[]>([])
   const [mode,     setMode]     = useState<ViewMode>('list')
   const [editing,  setEditing]  = useState<Student | null>(null)
@@ -67,8 +78,8 @@ function StudentManager({ groupId, teacherId }: { groupId: string; teacherId: st
     setImporting(true)
     setImportResult(null)
     try {
-      const names = await readStudentNamesFromSpreadsheet(file)
-      if (!names.length) {
+      const rows = await readStudentRowsFromSpreadsheet(file, groupId)
+      if (!rows.length) {
         showToast('No encontré nombres válidos en el archivo', 'err')
         return
       }
@@ -76,12 +87,12 @@ function StudentManager({ groupId, teacherId }: { groupId: string; teacherId: st
       const created: Student[] = []
       const failed: ImportResult['failed'] = []
 
-      for (const name of names) {
+      for (const row of rows) {
         try {
-          const student = await createStudent({ name, groupId })
+          const student = await createStudent({ name: row.name, groupId: row.groupId })
           created.push(student)
         } catch (e: any) {
-          failed.push({ name, error: getFirebaseErrorMessage(e) })
+          failed.push({ name: `${row.name} (${row.groupId})`, error: getFirebaseErrorMessage(e) })
         }
       }
 
@@ -135,7 +146,8 @@ function StudentManager({ groupId, teacherId }: { groupId: string; teacherId: st
         <Link href="/" className="text-slate-600 hover:text-slate-400 text-sm transition-colors">← Panel</Link>
         <span className="text-white/10">|</span>
         <span className="font-semibold text-sm">Gestión de Alumnos</span>
-        <span className="text-xs text-slate-700 ml-1">· {groupId} · {students.length} alumnos</span>
+        <GroupSelect groupId={groupId} groups={groups} onChange={onGroupChange} />
+        <span className="text-xs text-slate-700 ml-1">· {students.length} alumnos</span>
         <div className="ml-auto flex gap-2">
           <Link
             href="/students"
@@ -353,7 +365,12 @@ function ImportSummary({ result }: { result: ImportResult }) {
   )
 }
 
-async function readStudentNamesFromSpreadsheet(file: File): Promise<string[]> {
+type StudentImportRow = {
+  name: string
+  groupId: string
+}
+
+async function readStudentRowsFromSpreadsheet(file: File, fallbackGroupId: string): Promise<StudentImportRow[]> {
   const XLSX = await import('xlsx')
   const buffer = await file.arrayBuffer()
   const workbook = XLSX.read(buffer, { type: 'array' })
@@ -361,16 +378,28 @@ async function readStudentNamesFromSpreadsheet(file: File): Promise<string[]> {
   if (!sheet) return []
 
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
-  const names = rows
+  const students = rows
     .map(row => {
-      const entries = Object.entries(row)
-      const explicit = entries.find(([key]) => /^(nombre|alumno|student|name)$/i.test(key.trim()))
-      const value = explicit?.[1] ?? entries[0]?.[1] ?? ''
-      return String(value).trim()
-    })
-    .filter(Boolean)
+      const name = getSpreadsheetValue(row, /^(nombre|alumno|student|name)$/i) ?? Object.values(row)[0] ?? ''
+      const explicitGroup = getSpreadsheetValue(row, /^(groupid|grupo completo)$/i)
+      const grade = getSpreadsheetValue(row, /^(grado|grade)$/i)
+      const group = getSpreadsheetValue(row, /^(grupo|group)$/i)
+      const groupId = explicitGroup
+        ? String(explicitGroup).trim().toUpperCase()
+        : grade && group
+          ? normalizeGroupId(String(grade), String(group))
+          : fallbackGroupId
 
-  return Array.from(new Set(names))
+      return { name: String(name).trim(), groupId }
+    })
+    .filter(row => row.name)
+
+  return Array.from(new Map(students.map(row => [`${row.groupId}:${row.name}`, row])).values())
+}
+
+function getSpreadsheetValue(row: Record<string, unknown>, pattern: RegExp): unknown | null {
+  const entry = Object.entries(row).find(([key]) => pattern.test(key.trim()))
+  return entry?.[1] ?? null
 }
 
 function getFirebaseErrorMessage(error: any): string {
