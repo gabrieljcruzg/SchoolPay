@@ -643,6 +643,17 @@ export function subscribeToKermesTransactions(callback: (txs: KermesTransaction[
   })
 }
 
+export function subscribeToAllKermesTransactions(callback: (txs: KermesTransaction[]) => void): Unsubscribe {
+  const q = query(collection(db, 'kermesTransactions'), orderBy('ts', 'desc'))
+  return onSnapshot(q, snap => {
+    callback(snap.docs.map(d => ({
+      ...d.data(),
+      id: d.id,
+      ts: d.data().ts?.toDate() ?? new Date(),
+    })) as KermesTransaction[])
+  })
+}
+
 async function findKermesCardByPublicId(cardId: string): Promise<(KermesCard & { docId: string; publicId: string }) | null> {
   const publicId = cardId.trim().toUpperCase()
   const directSnap = await getDoc(doc(db, 'kermesCards', publicId))

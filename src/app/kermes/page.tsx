@@ -16,6 +16,7 @@ import {
   kermesAccessSignIn,
   rechargeKermesCard,
   signOutUser,
+  subscribeToAllKermesTransactions,
   subscribeToKermesAccess,
   subscribeToKermesCards,
   subscribeToKermesProducts,
@@ -29,7 +30,7 @@ import { Spinner, ToastList } from '@/components/ui'
 import { useToast } from '@/hooks/useToast'
 import { fmtCoins, type AuthUser, type KermesAccess, type KermesCard, type KermesProduct, type KermesTransaction, type KermesVendor } from '@/types'
 
-type KermesTab = 'pos' | 'cards' | 'vendors' | 'access' | 'history'
+type KermesTab = 'pos' | 'dashboard' | 'cards' | 'vendors' | 'access' | 'history'
 
 type Receipt = {
   type: 'charge' | 'recharge'
@@ -63,6 +64,7 @@ function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean
   const [vendors, setVendors] = useState<KermesVendor[]>([])
   const [products, setProducts] = useState<KermesProduct[]>([])
   const [txs, setTxs] = useState<KermesTransaction[]>([])
+  const [dashboardTxs, setDashboardTxs] = useState<KermesTransaction[]>([])
   const [accessList, setAccessList] = useState<KermesAccess[]>([])
   const [tab, setTab] = useState<KermesTab>('pos')
   const [selectedCardId, setSelectedCardId] = useState('')
@@ -79,6 +81,7 @@ function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean
   const visibleTabs: { id: KermesTab; label: string }[] = [
     { id: 'pos', label: canRecharge && !canCharge ? 'Recargar' : 'Cobrar' },
     ...(isTeacher ? [
+      { id: 'dashboard' as KermesTab, label: 'Dashboard' },
       { id: 'cards' as KermesTab, label: 'Tarjetas' },
       { id: 'vendors' as KermesTab, label: 'Tiendas' },
       { id: 'access' as KermesTab, label: 'Accesos' },
@@ -93,6 +96,7 @@ function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean
     ]
     if (isTeacher) {
       unsubs.push(subscribeToKermesTransactions(setTxs))
+      unsubs.push(subscribeToAllKermesTransactions(setDashboardTxs))
       unsubs.push(subscribeToKermesAccess(setAccessList))
     }
     return () => unsubs.forEach(u => u())
@@ -362,6 +366,7 @@ function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean
           </section>
         )}
 
+        {tab === 'dashboard' && <KermesDashboard txs={dashboardTxs} vendors={vendors} cards={cards} />}
         {tab === 'cards' && <KermesCardsAdmin cards={cards} onToast={showToast} />}
         {tab === 'vendors' && <KermesVendorsAdmin vendors={vendors} selectedVendorId={vendorId} onSelectVendor={setVendorId} products={products} onToast={showToast} />}
         {tab === 'access' && <KermesAccessAdmin accessList={accessList} vendors={vendors} onToast={showToast} />}
@@ -800,6 +805,104 @@ function ProductRow({ product, onToast }: { product: KermesProduct; onToast: (ms
       <span className="text-sm font-bold text-sp-gold">{fmtCoins(Number(price) || 0)}</span>
       <button onClick={() => deleteKermesProduct(product.id).then(() => onToast('Producto eliminado', 'ok'))} className="text-xs text-red-400 px-2">Eliminar</button>
     </div>
+  )
+}
+
+function KermesDashboard({
+  txs,
+  vendors,
+  cards,
+}: {
+  txs: KermesTransaction[]
+  vendors: KermesVendor[]
+  cards: KermesCard[]
+}) {
+  const purchases = txs.filter(tx => tx.type === 'purchase')
+  const recharges = txs.filter(tx => tx.type === 'recharge')
+
+  const totalBank = recharges.reduce((sum, tx) => sum + tx.amount, 0)
+  const totalSales = purchases.reduce((sum, tx) => sum + Math.abs(tx.amount), 0)
+  const remainingBalance = cards.reduce((sum, c) => sum + c.balance, 0)
+
+  const salesByVendor = vendors
+    .map(vendor => {
+      const vtxs = purchases.filter(tx => tx.vendorId === vendor.id)
+      return { id: vendor.id, name: vendor.name, total: vtxs.reduce((s, tx) => s + Math.abs(tx.amount), 0), count: vtxs.length }
+    })
+    .sort((a, b) => b.total - a.total)
+
+  const knownVendorIds = new Set(vendors.map(v => v.id))
+  const deletedVendorMap = new Map<string, { name: string; total: number; count: number }>()
+  purchases.forEach(tx => {
+    if (!tx.vendorId || knownVendorIds.has(tx.vendorId)) return
+    const entry = deletedVendorMap.get(tx.vendorId) ?? { name: tx.vendorName ?? tx.vendorId, total: 0, count: 0 }
+    entry.total += Math.abs(tx.amount)
+    entry.count++
+    deletedVendorMap.set(tx.vendorId, entry)
+  })
+
+  const maxSale = Math.max(...salesByVendor.map(v => v.total), 1)
+
+  return (
+    <section className="space-y-4">
+      <div className="grid sm:grid-cols-3 gap-3">
+        <div className="rounded-xl border border-green-700/30 bg-green-950/20 p-4">
+          <div className="text-xs text-green-400/60 mb-1 uppercase tracking-wide">Ingresado al banco</div>
+          <div className="text-3xl font-black text-green-300">{fmtCoins(totalBank)}</div>
+          <div className="text-xs text-slate-600 mt-1">{recharges.length} recarga{recharges.length !== 1 ? 's' : ''}</div>
+        </div>
+        <div className="rounded-xl border border-red-700/30 bg-red-950/20 p-4">
+          <div className="text-xs text-red-400/60 mb-1 uppercase tracking-wide">Total vendido</div>
+          <div className="text-3xl font-black text-red-300">{fmtCoins(totalSales)}</div>
+          <div className="text-xs text-slate-600 mt-1">{purchases.length} cobro{purchases.length !== 1 ? 's' : ''}</div>
+        </div>
+        <div className="rounded-xl border border-sp-gold/20 bg-sp-gold/5 p-4">
+          <div className="text-xs text-sp-gold/60 mb-1 uppercase tracking-wide">Saldo en circulación</div>
+          <div className="text-3xl font-black text-sp-gold">{fmtCoins(remainingBalance)}</div>
+          <div className="text-xs text-slate-600 mt-1">{cards.length} tarjeta{cards.length !== 1 ? 's' : ''}</div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-white/10 bg-sp-bg2 p-4">
+        <h2 className="text-base font-bold mb-4">Ventas por tienda</h2>
+        {salesByVendor.length === 0 && deletedVendorMap.size === 0 ? (
+          <div className="rounded-xl border border-dashed border-white/10 p-8 text-center text-sm text-slate-600">
+            Sin ventas registradas todavía.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {salesByVendor.map(v => (
+              <div key={v.id} className="rounded-lg bg-sp-bg3 border border-white/5 px-4 py-3">
+                <div className="flex items-center justify-between gap-4 mb-2">
+                  <span className="font-semibold text-slate-200">{v.name}</span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-slate-500">{v.count} cobro{v.count !== 1 ? 's' : ''}</span>
+                    <span className="text-xl font-black text-sp-gold">{fmtCoins(v.total)}</span>
+                  </div>
+                </div>
+                <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-sp-gold/60 transition-all duration-500"
+                    style={{ width: `${(v.total / maxSale) * 100}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+            {[...deletedVendorMap.entries()].map(([id, v]) => (
+              <div key={id} className="rounded-lg bg-sp-bg3 border border-white/5 px-4 py-3 opacity-50">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="font-semibold text-slate-400">{v.name} <span className="text-xs font-normal">(eliminada)</span></span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-slate-500">{v.count} cobro{v.count !== 1 ? 's' : ''}</span>
+                    <span className="text-xl font-black text-slate-500">{fmtCoins(v.total)}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
   )
 }
 
