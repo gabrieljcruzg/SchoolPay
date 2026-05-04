@@ -3,14 +3,18 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { format } from 'date-fns'
+import { es } from 'date-fns/locale'
 import { useAuth } from '@/lib/auth'
 import {
   chargeKermesCard,
+  closeKermes,
   createKermesAccessAccount,
   createKermesCard,
   createKermesProduct,
   createKermesVendor,
   deleteKermesAccess,
+  deleteKermesCard,
   deleteKermesProduct,
   deleteKermesVendor,
   kermesAccessSignIn,
@@ -19,7 +23,9 @@ import {
   subscribeToAllKermesTransactions,
   subscribeToKermesAccess,
   subscribeToKermesCards,
+  subscribeToKermesHistory,
   subscribeToKermesProducts,
+  subscribeToKermesSession,
   subscribeToKermesTransactions,
   subscribeToKermesVendors,
   updateKermesAccess,
@@ -28,7 +34,16 @@ import {
 import { useNFC, writeNFCTag } from '@/hooks/useNFC'
 import { Spinner, ToastList } from '@/components/ui'
 import { useToast } from '@/hooks/useToast'
-import { fmtCoins, type AuthUser, type KermesAccess, type KermesCard, type KermesProduct, type KermesTransaction, type KermesVendor } from '@/types'
+import {
+  fmtCoins,
+  type AuthUser,
+  type KermesAccess,
+  type KermesCard,
+  type KermesHistoryEvent,
+  type KermesProduct,
+  type KermesTransaction,
+  type KermesVendor,
+} from '@/types'
 
 type KermesTab = 'pos' | 'dashboard' | 'cards' | 'vendors' | 'access' | 'history'
 
@@ -38,6 +53,18 @@ type Receipt = {
   balance: number
   cardId: string
   vendorName?: string
+}
+
+type PrintSummaryData = {
+  totalBank: number
+  totalSales: number
+  remainingBalance: number
+  salesByVendor: { vendorId: string; vendorName: string; total: number; count: number }[]
+  totalCards: number
+  totalRecharges: number
+  totalPurchases: number
+  cards: { id: string; label: string; balance: number }[]
+  closedAt: Date
 }
 
 export default function KermesPage() {
@@ -66,6 +93,8 @@ function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean
   const [txs, setTxs] = useState<KermesTransaction[]>([])
   const [dashboardTxs, setDashboardTxs] = useState<KermesTransaction[]>([])
   const [accessList, setAccessList] = useState<KermesAccess[]>([])
+  const [historyEvents, setHistoryEvents] = useState<KermesHistoryEvent[]>([])
+  const [sessionStart, setSessionStart] = useState<Date | null | undefined>(undefined)
   const [tab, setTab] = useState<KermesTab>('pos')
   const [selectedCardId, setSelectedCardId] = useState('')
   const [manualId, setManualId] = useState('')
@@ -75,6 +104,8 @@ function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean
   const [cart, setCart] = useState<Record<string, number>>({})
   const [receipt, setReceipt] = useState<Receipt | null>(null)
   const [busy, setBusy] = useState(false)
+  const [showCloseModal, setShowCloseModal] = useState(false)
+  const [printSummary, setPrintSummary] = useState<PrintSummaryData | null>(null)
   const { toasts, show: showToast, dismiss } = useToast()
   const canCharge = isTeacher || user.role === 'kermes_vendor'
   const canRecharge = isTeacher || user.role === 'kermes_bank'
@@ -90,17 +121,23 @@ function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean
   ]
 
   useEffect(() => {
+    return subscribeToKermesSession(setSessionStart)
+  }, [])
+
+  useEffect(() => {
+    if (sessionStart === undefined) return
     const unsubs = [
       subscribeToKermesCards(setCards),
       subscribeToKermesVendors(setVendors),
     ]
     if (isTeacher) {
-      unsubs.push(subscribeToKermesTransactions(setTxs))
-      unsubs.push(subscribeToAllKermesTransactions(setDashboardTxs))
+      unsubs.push(subscribeToKermesTransactions(sessionStart, setTxs))
+      unsubs.push(subscribeToAllKermesTransactions(sessionStart, setDashboardTxs))
       unsubs.push(subscribeToKermesAccess(setAccessList))
+      unsubs.push(subscribeToKermesHistory(setHistoryEvents))
     }
     return () => unsubs.forEach(u => u())
-  }, [isTeacher])
+  }, [isTeacher, sessionStart])
 
   useEffect(() => {
     if (!isTeacher && tab !== 'pos') setTab('pos')
@@ -205,8 +242,71 @@ function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean
     }
   }
 
+  const buildSummary = (): PrintSummaryData => {
+    const purchases = dashboardTxs.filter(tx => tx.type === 'purchase')
+    const recharges = dashboardTxs.filter(tx => tx.type === 'recharge')
+    const totalBank = recharges.reduce((sum, tx) => sum + tx.amount, 0)
+    const totalSales = purchases.reduce((sum, tx) => sum + Math.abs(tx.amount), 0)
+    const remainingBalance = cards.reduce((sum, c) => sum + c.balance, 0)
+    const salesByVendor = vendors
+      .map(vendor => {
+        const vtxs = purchases.filter(tx => tx.vendorId === vendor.id)
+        return { vendorId: vendor.id, vendorName: vendor.name, total: vtxs.reduce((s, tx) => s + Math.abs(tx.amount), 0), count: vtxs.length }
+      })
+      .sort((a, b) => b.total - a.total)
+    return {
+      totalBank,
+      totalSales,
+      remainingBalance,
+      salesByVendor,
+      totalCards: cards.length,
+      totalRecharges: recharges.length,
+      totalPurchases: purchases.length,
+      cards: cards.map(c => ({ id: c.id, label: c.label, balance: c.balance })),
+      closedAt: new Date(),
+    }
+  }
+
+  const handleOpenCloseModal = () => {
+    setPrintSummary(buildSummary())
+    setShowCloseModal(true)
+  }
+
+  const handleCloseKermes = async () => {
+    if (!printSummary) return
+    setBusy(true)
+    try {
+      await closeKermes({
+        summary: {
+          totalBank: printSummary.totalBank,
+          totalSales: printSummary.totalSales,
+          remainingBalance: printSummary.remainingBalance,
+          salesByVendor: printSummary.salesByVendor,
+          totalCards: printSummary.totalCards,
+          totalRecharges: printSummary.totalRecharges,
+          totalPurchases: printSummary.totalPurchases,
+        },
+        cards: printSummary.cards,
+        sessionStart: sessionStart ?? null,
+      })
+      setShowCloseModal(false)
+      setTab('dashboard')
+      showToast('Kermés cerrada y guardada en historial', 'ok')
+    } catch (e: any) {
+      showToast(e.message ?? 'No se pudo cerrar la kermés', 'err')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (sessionStart === undefined) {
+    return <div className="min-h-screen flex items-center justify-center"><Spinner size={32} /></div>
+  }
+
   return (
     <div className="min-h-screen bg-sp-bg">
+      {printSummary && <KermesPrintArea summary={printSummary} />}
+
       <nav className="bg-sp-bg2 border-b border-white/5 px-4 h-14 flex items-center gap-3 sticky top-0 z-10">
         <Link href="/" className="text-slate-600 hover:text-slate-400 text-sm transition-colors">← Panel</Link>
         <span className="text-white/10">|</span>
@@ -366,7 +466,15 @@ function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean
           </section>
         )}
 
-        {tab === 'dashboard' && <KermesDashboard txs={dashboardTxs} vendors={vendors} cards={cards} />}
+        {tab === 'dashboard' && (
+          <KermesDashboard
+            txs={dashboardTxs}
+            vendors={vendors}
+            cards={cards}
+            historyEvents={historyEvents}
+            onOpenClose={handleOpenCloseModal}
+          />
+        )}
         {tab === 'cards' && <KermesCardsAdmin cards={cards} onToast={showToast} />}
         {tab === 'vendors' && <KermesVendorsAdmin vendors={vendors} selectedVendorId={vendorId} onSelectVendor={setVendorId} products={products} onToast={showToast} />}
         {tab === 'access' && <KermesAccessAdmin accessList={accessList} vendors={vendors} onToast={showToast} />}
@@ -374,10 +482,231 @@ function KermesManager({ user, isTeacher }: { user: AuthUser; isTeacher: boolean
       </main>
 
       {receipt && <ReceiptModal receipt={receipt} onClose={() => setReceipt(null)} />}
+      {showCloseModal && printSummary && (
+        <CloseKermesModal
+          summary={printSummary}
+          busy={busy}
+          onClose={() => setShowCloseModal(false)}
+          onConfirm={handleCloseKermes}
+        />
+      )}
       <ToastList toasts={toasts} onDismiss={dismiss} />
     </div>
   )
 }
+
+// ─── PRINT AREA ───────────────────────────────────────────────────────────────
+
+function KermesPrintArea({ summary }: { summary: PrintSummaryData }) {
+  return (
+    <>
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          #kermes-print-area, #kermes-print-area * { visibility: visible; }
+          #kermes-print-area {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            background: white;
+            color: black;
+            padding: 2cm;
+            font-family: sans-serif;
+          }
+          @page { margin: 1.5cm; }
+        }
+      `}</style>
+      <div id="kermes-print-area" style={{ display: 'none' }}>
+        <div style={{ borderBottom: '2px solid #333', paddingBottom: '12px', marginBottom: '20px' }}>
+          <h1 style={{ fontSize: '22px', fontWeight: 'bold', margin: 0 }}>Resumen de Kermés</h1>
+          <p style={{ color: '#555', margin: '4px 0 0' }}>
+            Fecha de cierre: {format(summary.closedAt, "d 'de' MMMM 'de' yyyy, HH:mm", { locale: es })}
+          </p>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', marginBottom: '24px' }}>
+          <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '12px' }}>
+            <div style={{ fontSize: '11px', color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Ingresado al banco</div>
+            <div style={{ fontSize: '24px', fontWeight: 'bold', marginTop: '4px' }}>{fmtCoins(summary.totalBank)}</div>
+            <div style={{ fontSize: '12px', color: '#666' }}>{summary.totalRecharges} recarga{summary.totalRecharges !== 1 ? 's' : ''}</div>
+          </div>
+          <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '12px' }}>
+            <div style={{ fontSize: '11px', color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Total vendido</div>
+            <div style={{ fontSize: '24px', fontWeight: 'bold', marginTop: '4px' }}>{fmtCoins(summary.totalSales)}</div>
+            <div style={{ fontSize: '12px', color: '#666' }}>{summary.totalPurchases} cobro{summary.totalPurchases !== 1 ? 's' : ''}</div>
+          </div>
+          <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '12px' }}>
+            <div style={{ fontSize: '11px', color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Saldo sin gastar</div>
+            <div style={{ fontSize: '24px', fontWeight: 'bold', marginTop: '4px' }}>{fmtCoins(summary.remainingBalance)}</div>
+            <div style={{ fontSize: '12px', color: '#666' }}>{summary.totalCards} tarjeta{summary.totalCards !== 1 ? 's' : ''}</div>
+          </div>
+        </div>
+
+        {summary.salesByVendor.length > 0 && (
+          <div style={{ marginBottom: '24px' }}>
+            <h2 style={{ fontSize: '16px', fontWeight: 'bold', marginBottom: '10px' }}>Ventas por tienda</h2>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+              <thead>
+                <tr style={{ borderBottom: '2px solid #333' }}>
+                  <th style={{ textAlign: 'left', padding: '6px 8px' }}>Tienda</th>
+                  <th style={{ textAlign: 'right', padding: '6px 8px' }}>Cobros</th>
+                  <th style={{ textAlign: 'right', padding: '6px 8px' }}>Total vendido</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.salesByVendor.map(v => (
+                  <tr key={v.vendorId} style={{ borderBottom: '1px solid #eee' }}>
+                    <td style={{ padding: '6px 8px' }}>{v.vendorName}</td>
+                    <td style={{ textAlign: 'right', padding: '6px 8px' }}>{v.count}</td>
+                    <td style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 'bold' }}>{fmtCoins(v.total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {summary.cards.length > 0 && (
+          <div>
+            <h2 style={{ fontSize: '16px', fontWeight: 'bold', marginBottom: '10px' }}>
+              Saldos por tarjeta al cierre
+            </h2>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+              <thead>
+                <tr style={{ borderBottom: '2px solid #333' }}>
+                  <th style={{ textAlign: 'left', padding: '4px 8px' }}>ID</th>
+                  <th style={{ textAlign: 'left', padding: '4px 8px' }}>Etiqueta</th>
+                  <th style={{ textAlign: 'right', padding: '4px 8px' }}>Saldo restante</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.cards.map(c => (
+                  <tr key={c.id} style={{ borderBottom: '1px solid #eee' }}>
+                    <td style={{ padding: '4px 8px', fontFamily: 'monospace' }}>{c.id}</td>
+                    <td style={{ padding: '4px 8px' }}>{c.label}</td>
+                    <td style={{ textAlign: 'right', padding: '4px 8px' }}>{fmtCoins(c.balance)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
+
+// ─── CLOSE KERMES MODAL ───────────────────────────────────────────────────────
+
+function CloseKermesModal({
+  summary,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  summary: PrintSummaryData
+  busy: boolean
+  onClose: () => void
+  onConfirm: () => void
+}) {
+  const [step, setStep] = useState<1 | 2>(1)
+
+  const handlePrint = () => {
+    window.print()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+      <div className="w-full max-w-lg rounded-2xl bg-sp-bg2 border border-white/10 p-5 shadow-2xl">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold text-red-300">Cerrar Kermés</h2>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-300 text-xl leading-none">×</button>
+        </div>
+
+        {step === 1 ? (
+          <>
+            <p className="text-sm text-slate-400 mb-4">
+              Revisa el resumen final. Al cerrar, todas las tarjetas quedarán inactivas y se guardará todo como historial para comenzar desde cero.
+            </p>
+
+            <div className="grid grid-cols-3 gap-2 mb-4">
+              <div className="rounded-xl bg-green-950/30 border border-green-700/20 p-3 text-center">
+                <div className="text-xs text-green-400/70 mb-1">Banco</div>
+                <div className="text-lg font-black text-green-300">{fmtCoins(summary.totalBank)}</div>
+                <div className="text-xs text-slate-600">{summary.totalRecharges} recargas</div>
+              </div>
+              <div className="rounded-xl bg-red-950/30 border border-red-700/20 p-3 text-center">
+                <div className="text-xs text-red-400/70 mb-1">Vendido</div>
+                <div className="text-lg font-black text-red-300">{fmtCoins(summary.totalSales)}</div>
+                <div className="text-xs text-slate-600">{summary.totalPurchases} cobros</div>
+              </div>
+              <div className="rounded-xl bg-sp-gold/5 border border-sp-gold/20 p-3 text-center">
+                <div className="text-xs text-sp-gold/70 mb-1">Sin gastar</div>
+                <div className="text-lg font-black text-sp-gold">{fmtCoins(summary.remainingBalance)}</div>
+                <div className="text-xs text-slate-600">{summary.totalCards} tarjetas</div>
+              </div>
+            </div>
+
+            {summary.salesByVendor.length > 0 && (
+              <div className="rounded-xl bg-sp-bg3 border border-white/5 p-3 mb-4 max-h-36 overflow-auto">
+                <div className="text-xs text-slate-500 mb-2 font-semibold">Ventas por tienda</div>
+                {summary.salesByVendor.map(v => (
+                  <div key={v.vendorId} className="flex justify-between text-sm py-1 border-b border-white/5 last:border-0">
+                    <span className="text-slate-300">{v.vendorName}</span>
+                    <span className="font-bold text-sp-gold">{fmtCoins(v.total)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button
+              onClick={handlePrint}
+              className="w-full mb-3 rounded-xl border border-sp-gold/30 bg-sp-gold/10 text-sp-gold py-2.5 text-sm font-semibold"
+            >
+              Imprimir / Guardar como PDF
+            </button>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={onClose} className="rounded-xl border border-white/10 text-slate-400 py-3 font-semibold text-sm">
+                Cancelar
+              </button>
+              <button
+                onClick={() => setStep(2)}
+                className="rounded-xl bg-red-950/50 border border-red-700/30 text-red-300 py-3 font-semibold text-sm"
+              >
+                Cerrar kermés →
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="rounded-xl bg-red-950/30 border border-red-700/30 p-4 mb-5">
+              <p className="text-red-300 font-semibold text-sm mb-1">Esta acción no se puede deshacer</p>
+              <p className="text-red-400/70 text-xs">
+                Se archivarán {summary.totalCards} tarjeta{summary.totalCards !== 1 ? 's' : ''} y todas las transacciones de esta sesión quedarán guardadas en el historial.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={() => setStep(1)} className="rounded-xl border border-white/10 text-slate-400 py-3 font-semibold text-sm">
+                Volver
+              </button>
+              <button
+                onClick={onConfirm}
+                disabled={busy}
+                className="rounded-xl bg-red-800/60 border border-red-600/40 text-red-200 py-3 font-bold text-sm disabled:opacity-40"
+              >
+                {busy ? 'Cerrando...' : 'CONFIRMAR CIERRE'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── ACCESS LOGIN ─────────────────────────────────────────────────────────────
 
 function KermesAccessLogin() {
   const [email, setEmail] = useState('')
@@ -419,6 +748,8 @@ function KermesAccessLogin() {
     </main>
   )
 }
+
+// ─── ACCESS ADMIN ─────────────────────────────────────────────────────────────
 
 function KermesAccessAdmin({
   accessList,
@@ -617,6 +948,8 @@ function AccessRow({
   )
 }
 
+// ─── RECEIPT MODAL ────────────────────────────────────────────────────────────
+
 function ReceiptModal({ receipt, onClose }: { receipt: Receipt; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
@@ -644,6 +977,8 @@ function ReceiptModal({ receipt, onClose }: { receipt: Receipt; onClose: () => v
   )
 }
 
+// ─── CARD LIST ────────────────────────────────────────────────────────────────
+
 function KermesCardList({ cards, onSelect }: { cards: KermesCard[]; onSelect: (card: KermesCard) => void }) {
   return (
     <aside className="rounded-xl border border-white/10 bg-sp-bg2 p-4">
@@ -662,6 +997,8 @@ function KermesCardList({ cards, onSelect }: { cards: KermesCard[]; onSelect: (c
     </aside>
   )
 }
+
+// ─── CARDS ADMIN ──────────────────────────────────────────────────────────────
 
 function KermesCardsAdmin({ cards, onToast }: { cards: KermesCard[]; onToast: (msg: string, type?: 'ok' | 'err') => void }) {
   const [label, setLabel] = useState('')
@@ -686,22 +1023,73 @@ function KermesCardsAdmin({ cards, onToast }: { cards: KermesCard[]; onToast: (m
       </div>
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
         {cards.map(card => (
-          <div key={card.id} className="rounded-lg bg-sp-bg3 border border-white/5 p-3">
-            <div className="font-mono text-xs text-sp-accent">{card.id}</div>
-            <div className="text-sm font-semibold mt-1">{card.label}</div>
-            <div className="text-lg font-black text-sp-gold mt-2">{fmtCoins(card.balance)}</div>
-            <button
-              onClick={() => writeNFCTag(card.id).then(() => onToast(`NFC escrito: ${card.id}`, 'ok')).catch(e => onToast(e.message, 'err'))}
-              className="mt-3 w-full rounded-lg border border-white/10 py-2 text-xs text-slate-300"
-            >
-              Escribir NFC
-            </button>
-          </div>
+          <KermesCardItem key={card.id} card={card} onToast={onToast} />
         ))}
       </div>
     </section>
   )
 }
+
+function KermesCardItem({ card, onToast }: { card: KermesCard; onToast: (msg: string, type?: 'ok' | 'err') => void }) {
+  const [confirming, setConfirming] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  const handleDelete = async () => {
+    if (!confirming) {
+      setConfirming(true)
+      return
+    }
+    setDeleting(true)
+    try {
+      await deleteKermesCard(card.id)
+      onToast(`Tarjeta ${card.id} eliminada`, 'ok')
+    } catch (e: any) {
+      onToast(e.message ?? 'No se pudo eliminar', 'err')
+      setDeleting(false)
+      setConfirming(false)
+    }
+  }
+
+  return (
+    <div className="rounded-lg bg-sp-bg3 border border-white/5 p-3">
+      <div className="font-mono text-xs text-sp-accent">{card.id}</div>
+      <div className="text-sm font-semibold mt-1">{card.label}</div>
+      <div className="text-lg font-black text-sp-gold mt-2">{fmtCoins(card.balance)}</div>
+      <button
+        onClick={() => writeNFCTag(card.id).then(() => onToast(`NFC escrito: ${card.id}`, 'ok')).catch(e => onToast(e.message, 'err'))}
+        className="mt-3 w-full rounded-lg border border-white/10 py-2 text-xs text-slate-300"
+      >
+        Escribir NFC
+      </button>
+      {confirming ? (
+        <div className="mt-2 grid grid-cols-2 gap-1.5">
+          <button
+            onClick={() => setConfirming(false)}
+            className="rounded-lg border border-white/10 py-1.5 text-xs text-slate-400"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={handleDelete}
+            disabled={deleting}
+            className="rounded-lg bg-red-950/60 border border-red-700/40 py-1.5 text-xs text-red-300 font-bold disabled:opacity-40"
+          >
+            {deleting ? '...' : 'Eliminar'}
+          </button>
+        </div>
+      ) : (
+        <button
+          onClick={handleDelete}
+          className="mt-2 w-full rounded-lg border border-red-900/30 py-1.5 text-xs text-red-500 hover:bg-red-950/30 transition-colors"
+        >
+          Eliminar tarjeta
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ─── VENDORS ADMIN ────────────────────────────────────────────────────────────
 
 function KermesVendorsAdmin({
   vendors,
@@ -808,14 +1196,20 @@ function ProductRow({ product, onToast }: { product: KermesProduct; onToast: (ms
   )
 }
 
+// ─── DASHBOARD ────────────────────────────────────────────────────────────────
+
 function KermesDashboard({
   txs,
   vendors,
   cards,
+  historyEvents,
+  onOpenClose,
 }: {
   txs: KermesTransaction[]
   vendors: KermesVendor[]
   cards: KermesCard[]
+  historyEvents: KermesHistoryEvent[]
+  onOpenClose: () => void
 }) {
   const purchases = txs.filter(tx => tx.type === 'purchase')
   const recharges = txs.filter(tx => tx.type === 'recharge')
@@ -902,14 +1296,104 @@ function KermesDashboard({
           </div>
         )}
       </div>
+
+      <button
+        onClick={onOpenClose}
+        className="w-full rounded-xl bg-red-950/30 border border-red-700/30 text-red-300 py-3 font-semibold hover:bg-red-950/50 transition-colors"
+      >
+        Cerrar Kermés y guardar historial
+      </button>
+
+      {historyEvents.length > 0 && (
+        <div className="rounded-xl border border-white/10 bg-sp-bg2 p-4">
+          <h2 className="text-base font-bold mb-3">Kermeses anteriores</h2>
+          <div className="space-y-2">
+            {historyEvents.map(event => (
+              <KermesHistoryEventRow key={event.id} event={event} />
+            ))}
+          </div>
+        </div>
+      )}
     </section>
   )
 }
 
+function KermesHistoryEventRow({ event }: { event: KermesHistoryEvent }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="rounded-lg bg-sp-bg3 border border-white/5">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-4 py-3 text-left"
+      >
+        <div>
+          <div className="text-sm font-semibold text-slate-200">
+            {format(event.closedAt, "d 'de' MMMM 'de' yyyy", { locale: es })}
+          </div>
+          <div className="text-xs text-slate-500 mt-0.5">
+            {event.summary.totalCards} tarjetas · {event.summary.totalPurchases} cobros · {event.summary.totalRecharges} recargas
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-lg font-black text-sp-gold">{fmtCoins(event.summary.totalSales)}</div>
+          <div className="text-xs text-slate-600">vendido</div>
+        </div>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4 border-t border-white/5 pt-3 space-y-3">
+          <div className="grid grid-cols-3 gap-2">
+            <div className="rounded-lg bg-sp-bg2 border border-white/5 p-2 text-center">
+              <div className="text-xs text-slate-500">Banco</div>
+              <div className="font-bold text-green-300">{fmtCoins(event.summary.totalBank)}</div>
+            </div>
+            <div className="rounded-lg bg-sp-bg2 border border-white/5 p-2 text-center">
+              <div className="text-xs text-slate-500">Vendido</div>
+              <div className="font-bold text-red-300">{fmtCoins(event.summary.totalSales)}</div>
+            </div>
+            <div className="rounded-lg bg-sp-bg2 border border-white/5 p-2 text-center">
+              <div className="text-xs text-slate-500">Sin gastar</div>
+              <div className="font-bold text-sp-gold">{fmtCoins(event.summary.remainingBalance)}</div>
+            </div>
+          </div>
+          {event.summary.salesByVendor.length > 0 && (
+            <div>
+              <div className="text-xs text-slate-500 mb-1.5 font-semibold">Por tienda</div>
+              {event.summary.salesByVendor.map(v => (
+                <div key={v.vendorId} className="flex justify-between text-sm py-1 border-b border-white/5 last:border-0">
+                  <span className="text-slate-400">{v.vendorName}</span>
+                  <span className="text-sp-gold font-bold">{fmtCoins(v.total)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {event.cards.length > 0 && (
+            <details>
+              <summary className="text-xs text-slate-500 cursor-pointer">Ver saldos de tarjetas al cierre ({event.cards.length})</summary>
+              <div className="mt-2 space-y-1 max-h-48 overflow-auto">
+                {event.cards.map(c => (
+                  <div key={c.id} className="flex justify-between text-xs py-1 border-b border-white/5 last:border-0">
+                    <span className="font-mono text-sp-accent">{c.id}</span>
+                    <span className="text-slate-400 truncate mx-2 flex-1">{c.label}</span>
+                    <span className="text-sp-gold">{fmtCoins(c.balance)}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── HISTORY ──────────────────────────────────────────────────────────────────
+
 function KermesHistory({ txs }: { txs: KermesTransaction[] }) {
   return (
     <section className="rounded-xl border border-white/10 bg-sp-bg2 p-4">
-      <h1 className="text-lg font-bold mb-4">Historial</h1>
+      <h1 className="text-lg font-bold mb-4">Historial de esta sesión</h1>
       <div className="space-y-1">
         {txs.map(tx => (
           <div key={tx.id} className="grid grid-cols-[auto_1fr_auto] gap-3 rounded-lg bg-sp-bg3 border border-white/5 px-3 py-2 text-sm">
@@ -918,6 +1402,11 @@ function KermesHistory({ txs }: { txs: KermesTransaction[] }) {
             <span className="font-bold text-sp-gold">{fmtCoins(tx.amount)}</span>
           </div>
         ))}
+        {txs.length === 0 && (
+          <div className="rounded-xl border border-dashed border-white/10 p-8 text-center text-sm text-slate-600">
+            Sin transacciones en esta sesión.
+          </div>
+        )}
       </div>
     </section>
   )

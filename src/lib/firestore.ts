@@ -23,7 +23,7 @@ import {
   type Student, type Transaction, type QuickAction,
   type StoreItem, type PurchaseOrder, type OrderStatus,
   type KermesCard, type KermesVendor, type KermesProduct, type KermesTransaction,
-  type KermesAccess, type KermesAccessRole,
+  type KermesAccess, type KermesAccessRole, type KermesHistoryEvent,
   getLevelForTotal, genPin, studentEmail,
 } from '@/types'
 
@@ -446,6 +446,10 @@ export async function createKermesCard(label: string): Promise<KermesCard> {
   return { ...card, createdAt: new Date() }
 }
 
+export async function deleteKermesCard(cardId: string): Promise<void> {
+  await updateDoc(doc(db, 'kermesCards', cardId), { active: false })
+}
+
 export async function getKermesCard(cardId: string): Promise<KermesCard | null> {
   const publicId = cardId.trim().toUpperCase()
   const directSnap = await getDoc(doc(db, 'kermesCards', publicId))
@@ -632,8 +636,13 @@ export async function deleteKermesAccess(id: string): Promise<void> {
   await deleteDoc(doc(db, 'kermesAccess', id))
 }
 
-export function subscribeToKermesTransactions(callback: (txs: KermesTransaction[]) => void): Unsubscribe {
-  const q = query(collection(db, 'kermesTransactions'), orderBy('ts', 'desc'), limit(80))
+export function subscribeToKermesTransactions(
+  sessionStart: Date | null,
+  callback: (txs: KermesTransaction[]) => void,
+): Unsubscribe {
+  const q = sessionStart
+    ? query(collection(db, 'kermesTransactions'), where('ts', '>=', sessionStart), orderBy('ts', 'desc'), limit(80))
+    : query(collection(db, 'kermesTransactions'), orderBy('ts', 'desc'), limit(80))
   return onSnapshot(q, snap => {
     callback(snap.docs.map(d => ({
       ...d.data(),
@@ -643,14 +652,62 @@ export function subscribeToKermesTransactions(callback: (txs: KermesTransaction[
   })
 }
 
-export function subscribeToAllKermesTransactions(callback: (txs: KermesTransaction[]) => void): Unsubscribe {
-  const q = query(collection(db, 'kermesTransactions'), orderBy('ts', 'desc'))
+export function subscribeToAllKermesTransactions(
+  sessionStart: Date | null,
+  callback: (txs: KermesTransaction[]) => void,
+): Unsubscribe {
+  const q = sessionStart
+    ? query(collection(db, 'kermesTransactions'), where('ts', '>=', sessionStart), orderBy('ts', 'desc'))
+    : query(collection(db, 'kermesTransactions'), orderBy('ts', 'desc'))
   return onSnapshot(q, snap => {
     callback(snap.docs.map(d => ({
       ...d.data(),
       id: d.id,
       ts: d.data().ts?.toDate() ?? new Date(),
     })) as KermesTransaction[])
+  })
+}
+
+export function subscribeToKermesSession(callback: (sessionStart: Date | null) => void): Unsubscribe {
+  return onSnapshot(doc(db, 'kermesConfig', 'session'), snap => {
+    callback(snap.exists() ? snap.data().sessionStart?.toDate() ?? null : null)
+  })
+}
+
+export async function closeKermes(data: {
+  summary: KermesHistoryEvent['summary']
+  cards: { id: string; label: string; balance: number }[]
+  sessionStart: Date | null
+}): Promise<string> {
+  const histRef = doc(collection(db, 'kermesHistory'))
+  await setDoc(histRef, {
+    closedAt: serverTimestamp(),
+    sessionStart: data.sessionStart,
+    summary: data.summary,
+    cards: data.cards,
+  })
+
+  const cardsSnap = await getDocs(query(collection(db, 'kermesCards'), where('active', '==', true)))
+  const CHUNK = 490
+  for (let i = 0; i < cardsSnap.docs.length; i += CHUNK) {
+    const batch = writeBatch(db)
+    cardsSnap.docs.slice(i, i + CHUNK).forEach(d => batch.update(d.ref, { active: false }))
+    await batch.commit()
+  }
+
+  await setDoc(doc(db, 'kermesConfig', 'session'), { sessionStart: serverTimestamp() })
+  return histRef.id
+}
+
+export function subscribeToKermesHistory(callback: (events: KermesHistoryEvent[]) => void): Unsubscribe {
+  const q = query(collection(db, 'kermesHistory'), orderBy('closedAt', 'desc'))
+  return onSnapshot(q, snap => {
+    callback(snap.docs.map(d => ({
+      ...d.data(),
+      id: d.id,
+      closedAt: d.data().closedAt?.toDate() ?? new Date(),
+      sessionStart: d.data().sessionStart?.toDate() ?? null,
+    })) as KermesHistoryEvent[])
   })
 }
 

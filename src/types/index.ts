@@ -172,6 +172,22 @@ export interface KermesAccess {
   createdAt: Date
 }
 
+export interface KermesHistoryEvent {
+  id: string
+  closedAt: Date
+  sessionStart: Date | null
+  summary: {
+    totalBank: number
+    totalSales: number
+    remainingBalance: number
+    salesByVendor: { vendorId: string; vendorName: string; total: number; count: number }[]
+    totalCards: number
+    totalRecharges: number
+    totalPurchases: number
+  }
+  cards: { id: string; label: string; balance: number }[]
+}
+
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 
 export type UserRole = 'teacher' | 'student' | 'kermes_vendor' | 'kermes_bank'
