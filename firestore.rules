@@ -142,5 +142,14 @@ service cloud.firestore {
         );
       allow update, delete: if isTeacher();
     }
+
+    match /kermesConfig/{configId} {
+      allow read: if isTeacher() || isKermesTerminal();
+      allow write: if isTeacher();
+    }
+
+    match /kermesHistory/{historyId} {
+      allow read, write: if isTeacher();
+    }
   }
 }

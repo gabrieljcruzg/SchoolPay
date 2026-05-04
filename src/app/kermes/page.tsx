@@ -501,10 +501,12 @@ function KermesPrintArea({ summary }: { summary: PrintSummaryData }) {
   return (
     <>
       <style>{`
+        #kermes-print-area { display: none; }
         @media print {
           body * { visibility: hidden; }
           #kermes-print-area, #kermes-print-area * { visibility: visible; }
           #kermes-print-area {
+            display: block !important;
             position: fixed;
             top: 0;
             left: 0;
@@ -517,7 +519,7 @@ function KermesPrintArea({ summary }: { summary: PrintSummaryData }) {
           @page { margin: 1.5cm; }
         }
       `}</style>
-      <div id="kermes-print-area" style={{ display: 'none' }}>
+      <div id="kermes-print-area">
         <div style={{ borderBottom: '2px solid #333', paddingBottom: '12px', marginBottom: '20px' }}>
           <h1 style={{ fontSize: '22px', fontWeight: 'bold', margin: 0 }}>Resumen de Kermés</h1>
           <p style={{ color: '#555', margin: '4px 0 0' }}>
