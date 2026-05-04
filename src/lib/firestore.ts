@@ -447,7 +447,9 @@ export async function createKermesCard(label: string): Promise<KermesCard> {
 }
 
 export async function deleteKermesCard(cardId: string): Promise<void> {
-  await updateDoc(doc(db, 'kermesCards', cardId), { active: false })
+  const card = await findKermesCardByPublicId(cardId)
+  if (!card) throw new Error(`Tarjeta ${cardId} no encontrada`)
+  await updateDoc(doc(db, 'kermesCards', card.docId), { active: false })
 }
 
 export async function getKermesCard(cardId: string): Promise<KermesCard | null> {
